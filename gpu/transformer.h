@@ -36,8 +36,8 @@
 
 typedef struct {
     // Component modules
-    Attention* attention;
-    MLP* mlp;
+    Attention** attention_layers;
+    MLP** mlp_layers;
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;
@@ -47,10 +47,11 @@ typedef struct {
     int seq_len;      // Sequence length
     int batch_size;   // Batch size
     int mlp_hidden;   // MLP hidden dimension
+    int num_layers;   // Number of transformer layers
 } Transformer;
 
 // Function prototypes
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, cublasHandle_t cublas_handle);
+Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, cublasHandle_t cublas_handle);
 void free_transformer(Transformer* transformer);
 void forward_pass_transformer(Transformer* transformer, float* d_X);
 float calculate_loss_transformer(Transformer* transformer, float* d_y);

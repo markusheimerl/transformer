@@ -298,7 +298,7 @@ void save_mlp(MLP* mlp, const char* filename) {
     free(h_W2_m); free(h_W2_v);
 
     fclose(file);
-    printf("MLP saved to %s\n", filename);
+    printf("Model saved to %s\n", filename);
 }
 
 // Load MLP weights from binary file
@@ -358,7 +358,7 @@ MLP* load_mlp(const char* filename, int custom_batch_size, cublasHandle_t cublas
     free(h_W2_m); free(h_W2_v);
     
     fclose(file);
-    printf("MLP loaded from %s\n", filename);
+    printf("Model loaded from %s\n", filename);
     
     return mlp;
 }
