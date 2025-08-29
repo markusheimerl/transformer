@@ -40,6 +40,8 @@ typedef struct {
     MLP* mlp1;
     Attention* attention2;
     MLP* mlp2;
+    Attention* attention3;
+    MLP* mlp3;
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;
