@@ -37,8 +37,9 @@
 typedef struct {
     // Component modules
     Attention* attention1;
-    MLP* mlp;
+    MLP* mlp1;
     Attention* attention2;
+    MLP* mlp2;
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;
