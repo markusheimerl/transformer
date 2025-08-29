@@ -39,6 +39,20 @@ typedef struct {
     Attention** attention_layers;
     MLP** mlp_layers;
     
+    // Learned residual scalars
+    float* d_gamma_attn;  // [num_layers] - scalars for attention residuals
+    float* d_gamma_mlp;   // [num_layers] - scalars for MLP residuals
+    
+    // Gradients for residual scalars
+    float* d_gamma_attn_grad;  // [num_layers]
+    float* d_gamma_mlp_grad;   // [num_layers]
+    
+    // Adam parameters for residual scalars
+    float* d_gamma_attn_m;  // [num_layers]
+    float* d_gamma_attn_v;  // [num_layers]
+    float* d_gamma_mlp_m;   // [num_layers]
+    float* d_gamma_mlp_v;   // [num_layers]
+    
     // cuBLAS handle
     cublasHandle_t cublas_handle;
     
@@ -48,6 +62,9 @@ typedef struct {
     int batch_size;   // Batch size
     int mlp_hidden;   // MLP hidden dimension
     int num_layers;   // Number of transformer layers
+    
+    // Adam state for scalars
+    int t_scalars;    // Time step for scalar updates
 } Transformer;
 
 // Function prototypes
