@@ -36,11 +36,15 @@
 
 typedef struct {
     // Component modules
-    Attention* attention;
+    Attention* attention1;
     MLP* mlp;
+    Attention* attention2;
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;
+    
+    // Intermediate buffer for residual connections
+    float* d_intermediate_buffer;
     
     // Dimensions
     int d_model;      // Model dimension (feature_dim)

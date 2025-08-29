@@ -11,19 +11,28 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     transformer->mlp_hidden = mlp_hidden;
     transformer->cublas_handle = cublas_handle;
     
-    // Initialize attention module
-    transformer->attention = init_attention(d_model, seq_len, batch_size, cublas_handle);
+    // Initialize first attention module
+    transformer->attention1 = init_attention(d_model, seq_len, batch_size, cublas_handle);
     
     // Initialize MLP module
     transformer->mlp = init_mlp(d_model, mlp_hidden, d_model, batch_size, seq_len, cublas_handle);
+    
+    // Initialize second attention module
+    transformer->attention2 = init_attention(d_model, seq_len, batch_size, cublas_handle);
+    
+    // Allocate intermediate buffer for residual connections
+    int seq_size = batch_size * seq_len * d_model;
+    CHECK_CUDA(cudaMalloc(&transformer->d_intermediate_buffer, seq_size * sizeof(float)));
     
     return transformer;
 }
 
 // Free memory
 void free_transformer(Transformer* transformer) {
-    free_attention(transformer->attention);
+    free_attention(transformer->attention1);
     free_mlp(transformer->mlp);
+    free_attention(transformer->attention2);
+    cudaFree(transformer->d_intermediate_buffer);
     free(transformer);
 }
 
@@ -32,54 +41,66 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
     const float alpha = 1.0f;
     int total_seq = transformer->batch_size * transformer->seq_len;
     
-    // Step 1: Attention layer
-    forward_pass_attention(transformer->attention, d_X);
+    // Step 1: First attention layer
+    forward_pass_attention(transformer->attention1, d_X);
     
-    // Step 2: First residual connection - attention_output += X
+    // Step 2: First residual connection - attention1_output += X
     CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             transformer->d_model, total_seq,
-                            &alpha, transformer->attention->d_layer_output, transformer->d_model,
+                            &alpha, transformer->attention1->d_layer_output, transformer->d_model,
                             &alpha, d_X, transformer->d_model,
-                            transformer->attention->d_layer_output, transformer->d_model));
+                            transformer->attention1->d_layer_output, transformer->d_model));
     
     // Step 3: MLP layer
-    forward_pass_mlp(transformer->mlp, transformer->attention->d_layer_output);
+    forward_pass_mlp(transformer->mlp, transformer->attention1->d_layer_output);
     
-    // Step 4: Second residual connection - mlp_output += attention_output
+    // Step 4: Second residual connection - mlp_output += attention1_output
     CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             transformer->d_model, total_seq,
                             &alpha, transformer->mlp->d_layer_output, transformer->d_model,
-                            &alpha, transformer->attention->d_layer_output, transformer->d_model,
+                            &alpha, transformer->attention1->d_layer_output, transformer->d_model,
                             transformer->mlp->d_layer_output, transformer->d_model));
+    
+    // Step 5: Second attention layer
+    forward_pass_attention(transformer->attention2, transformer->mlp->d_layer_output);
+    
+    // Step 6: Third residual connection - attention2_output += mlp_output
+    CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
+                            CUBLAS_OP_N, CUBLAS_OP_N,
+                            transformer->d_model, total_seq,
+                            &alpha, transformer->attention2->d_layer_output, transformer->d_model,
+                            &alpha, transformer->mlp->d_layer_output, transformer->d_model,
+                            transformer->attention2->d_layer_output, transformer->d_model));
 }
 
 // Calculate loss
 float calculate_loss_transformer(Transformer* transformer, float* d_y) {
-    // ∂L/∂Y = Y - Y_true
-    MLP* mlp = transformer->mlp;
+    // Loss is calculated against the final output (attention2)
+    Attention* final_attn = transformer->attention2;
     float loss = 0.0f;
-    int total_size = mlp->batch_size * mlp->seq_len * mlp->output_dim;
+    int total_size = final_attn->batch_size * final_attn->seq_len * final_attn->d_model;
 
     const float alpha = 1.0f;
     const float beta = -1.0f;
-    CHECK_CUBLAS(cublasSgeam(mlp->cublas_handle, 
+    CHECK_CUBLAS(cublasSgeam(final_attn->cublas_handle, 
                             CUBLAS_OP_N, CUBLAS_OP_N,
-                            mlp->output_dim, mlp->batch_size * mlp->seq_len,
-                            &alpha, mlp->d_layer_output, mlp->output_dim,
-                            &beta, d_y, mlp->output_dim,
-                            mlp->d_error_output, mlp->output_dim));
-    CHECK_CUBLAS(cublasSdot(mlp->cublas_handle, total_size, 
-                           mlp->d_error_output, 1, mlp->d_error_output, 1, &loss));
+                            final_attn->d_model, final_attn->batch_size * final_attn->seq_len,
+                            &alpha, final_attn->d_layer_output, final_attn->d_model,
+                            &beta, d_y, final_attn->d_model,
+                            final_attn->d_error_output, final_attn->d_model));
+    CHECK_CUBLAS(cublasSdot(final_attn->cublas_handle, total_size, 
+                           final_attn->d_error_output, 1, final_attn->d_error_output, 1, &loss));
     
     return loss / total_size;
 }
 
 // Zero gradients
 void zero_gradients_transformer(Transformer* transformer) {
-    zero_gradients_attention(transformer->attention);
+    zero_gradients_attention(transformer->attention1);
     zero_gradients_mlp(transformer->mlp);
+    zero_gradients_attention(transformer->attention2);
 }
 
 // Backward pass
@@ -88,33 +109,73 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
     const float beta = 0.0f;
     int total_seq = transformer->batch_size * transformer->seq_len;
     
-    // Step 1: Backward pass through MLP
-    backward_pass_mlp(transformer->mlp, transformer->attention->d_layer_output);
+    // Step 1: Backward pass through second attention
+    backward_pass_attention(transformer->attention2, transformer->mlp->d_layer_output);
     
-    // Step 2: Compute gradient w.r.t. MLP input
+    // Step 2: Compute gradient w.r.t. attention2 input
+    // ∂L/∂X = (∂L/∂Q)W_q^T + (∂L/∂K)W_k^T + (∂L/∂V)W_v^T
+    
+    // ∂L/∂X = (∂L/∂Q)W_q^T
+    CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
+                            CUBLAS_OP_T, CUBLAS_OP_N,
+                            transformer->d_model, total_seq, transformer->d_model,
+                            &alpha, transformer->attention2->d_W_q, transformer->d_model,
+                            transformer->attention2->d_grad_Q, transformer->d_model,
+                            &beta, transformer->d_intermediate_buffer, transformer->d_model));
+    
+    // ∂L/∂X += (∂L/∂K)W_k^T
+    CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
+                            CUBLAS_OP_T, CUBLAS_OP_N,
+                            transformer->d_model, total_seq, transformer->d_model,
+                            &alpha, transformer->attention2->d_W_k, transformer->d_model,
+                            transformer->attention2->d_grad_K, transformer->d_model,
+                            &alpha, transformer->d_intermediate_buffer, transformer->d_model));
+    
+    // ∂L/∂X += (∂L/∂V)W_v^T
+    CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
+                            CUBLAS_OP_T, CUBLAS_OP_N,
+                            transformer->d_model, total_seq, transformer->d_model,
+                            &alpha, transformer->attention2->d_W_v, transformer->d_model,
+                            transformer->attention2->d_grad_V, transformer->d_model,
+                            &alpha, transformer->d_intermediate_buffer, transformer->d_model));
+    
+    // Step 3: Add gradient from third residual connection
+    // mlp_error = grad_from_attn2 + attn2_error (from residual)
+    CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
+                            CUBLAS_OP_N, CUBLAS_OP_N,
+                            transformer->d_model, total_seq,
+                            &alpha, transformer->d_intermediate_buffer, transformer->d_model,
+                            &alpha, transformer->attention2->d_error_output, transformer->d_model,
+                            transformer->mlp->d_error_output, transformer->d_model));
+    
+    // Step 4: Backward pass through MLP
+    backward_pass_mlp(transformer->mlp, transformer->attention1->d_layer_output);
+    
+    // Step 5: Compute gradient w.r.t. MLP input
     CHECK_CUBLAS(cublasSgemm(transformer->mlp->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             transformer->d_model, total_seq, transformer->mlp_hidden,
                             &alpha, transformer->mlp->d_W1, transformer->d_model,
                             transformer->mlp->d_error_hidden, transformer->mlp_hidden,
-                            &beta, transformer->attention->d_error_output, transformer->d_model));
+                            &beta, transformer->attention1->d_error_output, transformer->d_model));
     
-    // Step 3: Add gradient from second residual connection
+    // Step 6: Add gradient from second residual connection
     CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             transformer->d_model, total_seq,
-                            &alpha, transformer->attention->d_error_output, transformer->d_model,
+                            &alpha, transformer->attention1->d_error_output, transformer->d_model,
                             &alpha, transformer->mlp->d_error_output, transformer->d_model,
-                            transformer->attention->d_error_output, transformer->d_model));
+                            transformer->attention1->d_error_output, transformer->d_model));
     
-    // Step 4: Backward pass through attention
-    backward_pass_attention(transformer->attention, d_X);
+    // Step 7: Backward pass through first attention
+    backward_pass_attention(transformer->attention1, d_X);
 }
 
 // Update weights
 void update_weights_transformer(Transformer* transformer, float learning_rate) {
-    update_weights_attention(transformer->attention, learning_rate);
+    update_weights_attention(transformer->attention1, learning_rate);
     update_weights_mlp(transformer->mlp, learning_rate);
+    update_weights_attention(transformer->attention2, learning_rate);
 }
 
 // Save transformer to binary files
@@ -130,15 +191,20 @@ void save_transformer(Transformer* transformer, const char* filename) {
         *dot = '\0';
     }
     
-    // Save attention module
-    char attn_filename[300];
-    snprintf(attn_filename, sizeof(attn_filename), "%s_attn.bin", base);
-    save_attention(transformer->attention, attn_filename);
+    // Save first attention module
+    char attn1_filename[300];
+    snprintf(attn1_filename, sizeof(attn1_filename), "%s_attn1.bin", base);
+    save_attention(transformer->attention1, attn1_filename);
     
     // Save MLP module
     char mlp_filename[300];
     snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp.bin", base);
     save_mlp(transformer->mlp, mlp_filename);
+    
+    // Save second attention module
+    char attn2_filename[300];
+    snprintf(attn2_filename, sizeof(attn2_filename), "%s_attn2.bin", base);
+    save_attention(transformer->attention2, attn2_filename);
     
     // Save transformer metadata
     FILE* file = fopen(filename, "wb");
@@ -187,18 +253,28 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         *dot = '\0';
     }
     
-    // Load attention module
-    char attn_filename[300];
-    snprintf(attn_filename, sizeof(attn_filename), "%s_attn.bin", base);
-    Attention* attention = load_attention(attn_filename, batch_size, cublas_handle);
-    if (!attention) return NULL;
+    // Load first attention module
+    char attn1_filename[300];
+    snprintf(attn1_filename, sizeof(attn1_filename), "%s_attn1.bin", base);
+    Attention* attention1 = load_attention(attn1_filename, batch_size, cublas_handle);
+    if (!attention1) return NULL;
     
     // Load MLP module
     char mlp_filename[300];
     snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp.bin", base);
     MLP* mlp = load_mlp(mlp_filename, batch_size, cublas_handle);
     if (!mlp) {
-        free_attention(attention);
+        free_attention(attention1);
+        return NULL;
+    }
+    
+    // Load second attention module
+    char attn2_filename[300];
+    snprintf(attn2_filename, sizeof(attn2_filename), "%s_attn2.bin", base);
+    Attention* attention2 = load_attention(attn2_filename, batch_size, cublas_handle);
+    if (!attention2) {
+        free_attention(attention1);
+        free_mlp(mlp);
         return NULL;
     }
     
@@ -209,8 +285,13 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     transformer->batch_size = batch_size;
     transformer->mlp_hidden = mlp_hidden;
     transformer->cublas_handle = cublas_handle;
-    transformer->attention = attention;
+    transformer->attention1 = attention1;
     transformer->mlp = mlp;
+    transformer->attention2 = attention2;
+    
+    // Allocate intermediate buffer
+    int seq_size = batch_size * seq_len * d_model;
+    CHECK_CUDA(cudaMalloc(&transformer->d_intermediate_buffer, seq_size * sizeof(float)));
     
     printf("Model loaded from %s\n", filename);
     return transformer;

@@ -83,8 +83,8 @@ void evaluate_model(Transformer* transformer, float* X_eval, int eval_samples, i
         CHECK_CUDA(cudaMemcpy(d_X, X_batch, seq_size * sizeof(float), cudaMemcpyHostToDevice));
         forward_pass_transformer(transformer, d_X);
         
-        // Copy predictions back to host - use final MLP output
-        CHECK_CUDA(cudaMemcpy(predictions, transformer->mlp->d_layer_output, 
+        // Copy predictions back to host
+        CHECK_CUDA(cudaMemcpy(predictions, transformer->attention2->d_layer_output, 
                              seq_size * sizeof(float), cudaMemcpyDeviceToHost));
         
         for (int sample = 0; sample < batch_size; sample++) {
@@ -145,8 +145,8 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
     CHECK_CUDA(cudaMemcpy(d_X, X_eval, seq_size * sizeof(float), cudaMemcpyHostToDevice));
     forward_pass_transformer(transformer, d_X);
     
-    // Copy predictions back to host - use final MLP output
-    CHECK_CUDA(cudaMemcpy(predictions, transformer->mlp->d_layer_output, 
+    // Copy predictions back to host
+    CHECK_CUDA(cudaMemcpy(predictions, transformer->attention2->d_layer_output, 
                          seq_size * sizeof(float), cudaMemcpyDeviceToHost));
     
     for (int sample = 0; sample < 5; sample++) {
