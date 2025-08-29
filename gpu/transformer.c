@@ -20,14 +20,14 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     return transformer;
 }
 
-// Free transformer memory
+// Free memory
 void free_transformer(Transformer* transformer) {
     free_attention(transformer->attention);
     free_mlp(transformer->mlp);
     free(transformer);
 }
 
-// Forward pass through transformer - clean and simple!
+// Forward pass
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
     // Step 1: Attention layer
     forward_pass_attention(transformer->attention, d_X);
@@ -48,15 +48,37 @@ void zero_gradients_transformer(Transformer* transformer) {
     zero_gradients_mlp(transformer->mlp);
 }
 
-// Backward pass through transformer - clean gradient flow
+// Backward pass
 void backward_pass_transformer(Transformer* transformer, float* d_X) {
-    // Step 1: Backward pass through MLP (using attention output as input)
+    // Step 1: Backward pass through MLP
     backward_pass_mlp(transformer->mlp, transformer->attention->d_layer_output);
     
-    // Step 2: Copy MLP input gradients to attention output gradients for gradient flow
-    int seq_size = transformer->batch_size * transformer->seq_len * transformer->d_model;
-    CHECK_CUDA(cudaMemcpy(transformer->attention->d_error_output, transformer->mlp->d_error_output[0],
-                         seq_size * sizeof(float), cudaMemcpyDeviceToDevice));
+    // Step 2: Compute gradient w.r.t. MLP input
+    // We need: ∂L/∂input = (∂L/∂H)(W₁)^T + (∂L/∂Y)(W₃)^T for layer 0
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    
+    // Get dimensions from first MLP layer
+    int input_size = transformer->mlp->input_dim;
+    int hidden_dim = transformer->mlp->hidden_dim;
+    int output_size = (transformer->mlp->num_layers == 1) ? 
+                      transformer->mlp->output_dim : transformer->mlp->hidden_dim;
+    
+    // Compute: ∂L/∂input = (∂L/∂H₀)(W₁₀)^T
+    CHECK_CUBLAS(cublasSgemm(transformer->mlp->cublas_handle,
+                            CUBLAS_OP_N, CUBLAS_OP_N,
+                            input_size, transformer->mlp->batch_size, hidden_dim,
+                            &alpha, transformer->mlp->d_W1[0], input_size,
+                            transformer->mlp->d_error_hidden[0], hidden_dim,
+                            &beta, transformer->attention->d_error_output, input_size));
+    
+    // Add: ∂L/∂input += (∂L/∂Y₀)(W₃₀)^T  
+    CHECK_CUBLAS(cublasSgemm(transformer->mlp->cublas_handle,
+                            CUBLAS_OP_N, CUBLAS_OP_N,
+                            input_size, transformer->mlp->batch_size, output_size,
+                            &alpha, transformer->mlp->d_W3[0], input_size,
+                            transformer->mlp->d_error_output[0], output_size,
+                            &alpha, transformer->attention->d_error_output, input_size));
     
     // Step 3: Backward pass through attention
     backward_pass_attention(transformer->attention, d_X);
