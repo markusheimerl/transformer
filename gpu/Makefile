@@ -29,5 +29,4 @@ run: train.out
 
 clean:
 	rm -f *.out *.o *.csv *.bin
-	$(MAKE) -C ../mlp clean
 	$(MAKE) -C ../attention clean
