@@ -209,7 +209,7 @@ __global__ void adamw_update_kernel_mlp(float* weight, float* grad, float* m, fl
         v[idx] = beta2 * v[idx] + (1.0f - beta2) * g * g;
         
         float update = alpha_t * m[idx] / (sqrtf(v[idx]) + epsilon);
-        // W = (1-λη)W - η·(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
+        // W = (1-λη)W - η(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
         weight[idx] = weight[idx] * (1.0f - learning_rate * weight_decay) - update;
     }
 }
