@@ -34,14 +34,12 @@
 } while(0)
 #endif
 
+#define NUM_LAYERS 3
+
 typedef struct {
-    // Component modules
-    Attention* attention1;
-    MLP* mlp1;
-    Attention* attention2;
-    MLP* mlp2;
-    Attention* attention3;
-    MLP* mlp3;
+    // Component modules - arrays for easy iteration
+    Attention* attention_layers[NUM_LAYERS];
+    MLP* mlp_layers[NUM_LAYERS];
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;

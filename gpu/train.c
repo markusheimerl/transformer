@@ -23,8 +23,8 @@ void train_model(Transformer* transformer, float* X, float* y, int num_samples, 
     CHECK_CUDA(cudaMalloc(&d_y, seq_size * sizeof(float)));
     
     printf("Starting training...\n");
-    printf("Architecture: d_model=%d, seq_len=%d, mlp_hidden=%d, batch_size=%d, num_samples=%d, num_batches=%d\n\n", 
-           transformer->d_model, transformer->seq_len, transformer->mlp_hidden, batch_size, num_samples, num_batches);
+    printf("Architecture: %d layers, d_model=%d, seq_len=%d, mlp_hidden=%d, batch_size=%d, num_samples=%d, num_batches=%d\n\n", 
+           NUM_LAYERS, transformer->d_model, transformer->seq_len, transformer->mlp_hidden, batch_size, num_samples, num_batches);
     
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
         float total_loss = 0.0f;
@@ -84,9 +84,11 @@ void evaluate_model(Transformer* transformer, float* X_eval, int eval_samples, i
         forward_pass_transformer(transformer, d_X);
         
         // Copy predictions back to host
-        CHECK_CUDA(cudaMemcpy(predictions, transformer->mlp3->d_layer_output, 
+        MLP* final_mlp = transformer->mlp_layers[NUM_LAYERS-1];
+        CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, 
                              seq_size * sizeof(float), cudaMemcpyDeviceToHost));
         
+        // Evaluate predictions for this batch
         for (int sample = 0; sample < batch_size; sample++) {
             int global_sample = start_idx + sample;
             
@@ -146,13 +148,16 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
     forward_pass_transformer(transformer, d_X);
     
     // Copy predictions back to host
-    CHECK_CUDA(cudaMemcpy(predictions, transformer->mlp3->d_layer_output, 
+    MLP* final_mlp = transformer->mlp_layers[NUM_LAYERS-1];
+    CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, 
                          seq_size * sizeof(float), cudaMemcpyDeviceToHost));
     
+    // Print sample predictions
     for (int sample = 0; sample < 5; sample++) {
         printf("\nSample %d:\n", sample);
         printf("Input:\n");
         
+        // Print input
         for (int seq = 0; seq < seq_len; seq++) {
             printf("  [");
             for (int feat = 0; feat < feature_dim; feat++) {
@@ -176,6 +181,7 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
         printf("Expected max row: %d (value: %.2f)\n", expected_max_row, max_val);
         printf("Model Output:\n");
         
+        // Print model output
         for (int seq = 0; seq < seq_len; seq++) {
             printf("  [");
             for (int feat = 0; feat < feature_dim; feat++) {
@@ -187,6 +193,7 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
         
         printf("Target Output:\n");
         
+        // Print target output
         for (int seq = 0; seq < seq_len; seq++) {
             printf("  [");
             for (int feat = 0; feat < feature_dim; feat++) {
@@ -197,7 +204,7 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
         }
     }
     
-    // Calculate MSE per feature
+    // Calculate and print MSE per feature
     printf("\nMSE per feature (first evaluation batch):\n");
     for (int feat = 0; feat < feature_dim; feat++) {
         float mse = 0.0f;
@@ -227,14 +234,16 @@ int main() {
 
     const int seq_len = 16, feature_dim = 8, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
     
+    // Generate training data
     float *X, *y;
     generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
     print_data_samples(X, y, seq_len, feature_dim);
     
+    // Initialize and train transformer
     Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, cublas_handle);
     train_model(transformer, X, y, num_samples, batch_size, 50, 0.001f);
 
-    // Get timestamp and save
+    // Get timestamp and save model
     char model_fname[64], data_fname[64];
     time_t now = time(NULL);
     strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_model.bin", localtime(&now));
@@ -243,6 +252,7 @@ int main() {
     save_transformer(transformer, model_fname);
     save_data(X, y, num_samples, seq_len, feature_dim, data_fname);
     
+    // Verify saved model
     printf("\nVerifying saved model...\n");
     Transformer* loaded_transformer = load_transformer(model_fname, batch_size, cublas_handle);
     
@@ -267,6 +277,7 @@ int main() {
     evaluate_model(loaded_transformer, X_eval, eval_samples, seq_len, feature_dim, batch_size);
     print_evaluation_samples(loaded_transformer, X_eval, y_eval, seq_len, feature_dim, batch_size);
     
+    // Cleanup
     free(X); free(y); free(X_eval); free(y_eval);
     CHECK_CUDA(cudaFree(d_X)); CHECK_CUDA(cudaFree(d_y));
     free_transformer(transformer); free_transformer(loaded_transformer);
