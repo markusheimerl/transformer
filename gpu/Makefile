@@ -28,6 +28,6 @@ run: train.out
 	@time ./train.out
 
 clean:
-	rm -f *.out *.o *.csv *.bin *.attn *.mlp
+	rm -f *.out *.o *.csv *.bin
 	$(MAKE) -C ../mlp clean
 	$(MAKE) -C ../attention clean
