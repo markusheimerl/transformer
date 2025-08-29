@@ -20,10 +20,6 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     // Initialize second attention module
     transformer->attention2 = init_attention(d_model, seq_len, batch_size, cublas_handle);
     
-    // Allocate intermediate buffer for residual connections
-    int seq_size = batch_size * seq_len * d_model;
-    CHECK_CUDA(cudaMalloc(&transformer->d_intermediate_buffer, seq_size * sizeof(float)));
-    
     return transformer;
 }
 
@@ -32,7 +28,6 @@ void free_transformer(Transformer* transformer) {
     free_attention(transformer->attention1);
     free_mlp(transformer->mlp);
     free_attention(transformer->attention2);
-    cudaFree(transformer->d_intermediate_buffer);
     free(transformer);
 }
 
@@ -77,7 +72,7 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
 
 // Calculate loss
 float calculate_loss_transformer(Transformer* transformer, float* d_y) {
-    // Loss is calculated against the final output (attention2)
+    // Loss is calculated against the final output
     Attention* final_attn = transformer->attention2;
     float loss = 0.0f;
     int total_size = final_attn->batch_size * final_attn->seq_len * final_attn->d_model;
@@ -112,7 +107,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
     // Step 1: Backward pass through second attention
     backward_pass_attention(transformer->attention2, transformer->mlp->d_layer_output);
     
-    // Step 2: Compute gradient w.r.t. attention2 input
+    // Step 2: Compute gradient w.r.t. attention2 input and store in MLP error buffer
     // ∂L/∂X = (∂L/∂Q)W_q^T + (∂L/∂K)W_k^T + (∂L/∂V)W_v^T
     
     // ∂L/∂X = (∂L/∂Q)W_q^T
@@ -121,7 +116,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                             transformer->d_model, total_seq, transformer->d_model,
                             &alpha, transformer->attention2->d_W_q, transformer->d_model,
                             transformer->attention2->d_grad_Q, transformer->d_model,
-                            &beta, transformer->d_intermediate_buffer, transformer->d_model));
+                            &beta, transformer->mlp->d_error_output, transformer->d_model));
     
     // ∂L/∂X += (∂L/∂K)W_k^T
     CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
@@ -129,7 +124,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                             transformer->d_model, total_seq, transformer->d_model,
                             &alpha, transformer->attention2->d_W_k, transformer->d_model,
                             transformer->attention2->d_grad_K, transformer->d_model,
-                            &alpha, transformer->d_intermediate_buffer, transformer->d_model));
+                            &alpha, transformer->mlp->d_error_output, transformer->d_model));
     
     // ∂L/∂X += (∂L/∂V)W_v^T
     CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
@@ -137,21 +132,21 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                             transformer->d_model, total_seq, transformer->d_model,
                             &alpha, transformer->attention2->d_W_v, transformer->d_model,
                             transformer->attention2->d_grad_V, transformer->d_model,
-                            &alpha, transformer->d_intermediate_buffer, transformer->d_model));
+                            &alpha, transformer->mlp->d_error_output, transformer->d_model));
     
     // Step 3: Add gradient from third residual connection
-    // mlp_error = grad_from_attn2 + attn2_error (from residual)
+    // mlp_error = grad_from_attn2 + attn2_error
     CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             transformer->d_model, total_seq,
-                            &alpha, transformer->d_intermediate_buffer, transformer->d_model,
+                            &alpha, transformer->mlp->d_error_output, transformer->d_model,
                             &alpha, transformer->attention2->d_error_output, transformer->d_model,
                             transformer->mlp->d_error_output, transformer->d_model));
     
     // Step 4: Backward pass through MLP
     backward_pass_mlp(transformer->mlp, transformer->attention1->d_layer_output);
     
-    // Step 5: Compute gradient w.r.t. MLP input
+    // Step 5: Compute gradient w.r.t. MLP input and store in attention1 error buffer
     CHECK_CUBLAS(cublasSgemm(transformer->mlp->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             transformer->d_model, total_seq, transformer->mlp_hidden,
@@ -288,10 +283,6 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     transformer->attention1 = attention1;
     transformer->mlp = mlp;
     transformer->attention2 = attention2;
-    
-    // Allocate intermediate buffer
-    int seq_size = batch_size * seq_len * d_model;
-    CHECK_CUDA(cudaMalloc(&transformer->d_intermediate_buffer, seq_size * sizeof(float)));
     
     printf("Model loaded from %s\n", filename);
     return transformer;
