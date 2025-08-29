@@ -15,7 +15,7 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     transformer->attention = init_attention(d_model, seq_len, batch_size, cublas_handle);
     
     // Initialize MLP module
-    transformer->mlp = init_mlp(d_model, mlp_hidden, d_model, 1, batch_size * seq_len, cublas_handle);
+    transformer->mlp = init_mlp(d_model, mlp_hidden, d_model, batch_size, seq_len, cublas_handle);
     
     return transformer;
 }
@@ -38,8 +38,23 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
 
 // Calculate loss
 float calculate_loss_transformer(Transformer* transformer, float* d_y) {
-    // Use MLP's loss calculation with the final MLP output
-    return calculate_loss_mlp(transformer->mlp, d_y);
+    // ∂L/∂Y = Y - Y_true
+    MLP* mlp = transformer->mlp;
+    float loss = 0.0f;
+    int total_size = mlp->batch_size * mlp->seq_len * mlp->output_dim;
+
+    const float alpha = 1.0f;
+    const float beta = -1.0f;
+    CHECK_CUBLAS(cublasSgeam(mlp->cublas_handle, 
+                            CUBLAS_OP_N, CUBLAS_OP_N,
+                            mlp->output_dim, mlp->batch_size * mlp->seq_len,
+                            &alpha, mlp->d_layer_output, mlp->output_dim,
+                            &beta, d_y, mlp->output_dim,
+                            mlp->d_error_output, mlp->output_dim));
+    CHECK_CUBLAS(cublasSdot(mlp->cublas_handle, total_size, 
+                           mlp->d_error_output, 1, mlp->d_error_output, 1, &loss));
+    
+    return loss / total_size;
 }
 
 // Zero gradients
@@ -54,31 +69,17 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
     backward_pass_mlp(transformer->mlp, transformer->attention->d_layer_output);
     
     // Step 2: Compute gradient w.r.t. MLP input
-    // We need: ∂L/∂input = (∂L/∂H)(W₁)^T + (∂L/∂Y)(W₃)^T for layer 0
+    // ∂L/∂attention_output = (∂L/∂H)(W₁)^T
     const float alpha = 1.0f;
     const float beta = 0.0f;
+    int total_seq = transformer->batch_size * transformer->seq_len;
     
-    // Get dimensions from first MLP layer
-    int input_size = transformer->mlp->input_dim;
-    int hidden_dim = transformer->mlp->hidden_dim;
-    int output_size = (transformer->mlp->num_layers == 1) ? 
-                      transformer->mlp->output_dim : transformer->mlp->hidden_dim;
-    
-    // Compute: ∂L/∂input = (∂L/∂H₀)(W₁₀)^T
     CHECK_CUBLAS(cublasSgemm(transformer->mlp->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
-                            input_size, transformer->mlp->batch_size, hidden_dim,
-                            &alpha, transformer->mlp->d_W1[0], input_size,
-                            transformer->mlp->d_error_hidden[0], hidden_dim,
-                            &beta, transformer->attention->d_error_output, input_size));
-    
-    // Add: ∂L/∂input += (∂L/∂Y₀)(W₃₀)^T  
-    CHECK_CUBLAS(cublasSgemm(transformer->mlp->cublas_handle,
-                            CUBLAS_OP_N, CUBLAS_OP_N,
-                            input_size, transformer->mlp->batch_size, output_size,
-                            &alpha, transformer->mlp->d_W3[0], input_size,
-                            transformer->mlp->d_error_output[0], output_size,
-                            &alpha, transformer->attention->d_error_output, input_size));
+                            transformer->d_model, total_seq, transformer->mlp_hidden,
+                            &alpha, transformer->mlp->d_W1, transformer->d_model,
+                            transformer->mlp->d_error_hidden, transformer->mlp_hidden,
+                            &beta, transformer->attention->d_error_output, transformer->d_model));
     
     // Step 3: Backward pass through attention
     backward_pass_attention(transformer->attention, d_X);
@@ -90,22 +91,18 @@ void update_weights_transformer(Transformer* transformer, float learning_rate) {
     update_weights_mlp(transformer->mlp, learning_rate);
 }
 
-// Extract base filename without extension
-static void get_base_filename(const char* filename, char* base, size_t base_size) {
-    strncpy(base, filename, base_size - 1);
-    base[base_size - 1] = '\0';
+// Save transformer to binary files
+void save_transformer(Transformer* transformer, const char* filename) {
+    // Extract base filename without extension
+    char base[256];
+    strncpy(base, filename, sizeof(base) - 1);
+    base[sizeof(base) - 1] = '\0';
     
     // Remove .bin extension if present
     char* dot = strrchr(base, '.');
     if (dot && strcmp(dot, ".bin") == 0) {
         *dot = '\0';
     }
-}
-
-// Save transformer to binary files
-void save_transformer(Transformer* transformer, const char* filename) {
-    char base[256];
-    get_base_filename(filename, base, sizeof(base));
     
     // Save attention module
     char attn_filename[300];
@@ -153,8 +150,16 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     // Use custom_batch_size if provided
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
+    // Extract base filename without extension
     char base[256];
-    get_base_filename(filename, base, sizeof(base));
+    strncpy(base, filename, sizeof(base) - 1);
+    base[sizeof(base) - 1] = '\0';
+    
+    // Remove .bin extension if present
+    char* dot = strrchr(base, '.');
+    if (dot && strcmp(dot, ".bin") == 0) {
+        *dot = '\0';
+    }
     
     // Load attention module
     char attn_filename[300];
@@ -165,7 +170,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     // Load MLP module
     char mlp_filename[300];
     snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp.bin", base);
-    MLP* mlp = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle);
+    MLP* mlp = load_mlp(mlp_filename, batch_size, cublas_handle);
     if (!mlp) {
         free_attention(attention);
         return NULL;

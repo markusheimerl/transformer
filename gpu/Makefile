@@ -15,8 +15,8 @@ transformer.o: transformer.c transformer.h
 attention.o: ../attention/gpu/attention.c ../attention/gpu/attention.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../attention/gpu/attention.c -o $@
 
-mlp.o: ../mlp/gpu/mlp.c ../mlp/gpu/mlp.h
-	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../mlp/gpu/mlp.c -o $@
+mlp.o: mlp.c mlp.h
+	$(CC) $(CFLAGS) $(CUDAFLAGS) -c mlp.c -o $@
 
 data.o: ../attention/data.c ../attention/data.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../attention/data.c -o $@
