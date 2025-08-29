@@ -1,7 +1,7 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, cublasHandle_t cublas_handle) {
+Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, cublasHandle_t cublas_handle) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
     // Store dimensions
@@ -9,10 +9,15 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     transformer->seq_len = seq_len;
     transformer->batch_size = batch_size;
     transformer->mlp_hidden = mlp_hidden;
+    transformer->num_layers = num_layers;
     transformer->cublas_handle = cublas_handle;
     
+    // Allocate arrays for layers
+    transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
+    transformer->mlp_layers = (MLP**)malloc(num_layers * sizeof(MLP*));
+    
     // Initialize all layers
-    for (int i = 0; i < NUM_LAYERS; i++) {
+    for (int i = 0; i < num_layers; i++) {
         transformer->attention_layers[i] = init_attention(d_model, seq_len, batch_size, cublas_handle);
         transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size, seq_len, cublas_handle);
     }
@@ -22,10 +27,12 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
 
 // Free memory
 void free_transformer(Transformer* transformer) {
-    for (int i = 0; i < NUM_LAYERS; i++) {
+    for (int i = 0; i < transformer->num_layers; i++) {
         free_attention(transformer->attention_layers[i]);
         free_mlp(transformer->mlp_layers[i]);
     }
+    free(transformer->attention_layers);
+    free(transformer->mlp_layers);
     free(transformer);
 }
 
@@ -35,7 +42,7 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
     int total_seq = transformer->batch_size * transformer->seq_len;
 
     // Forward pass through layers
-    for (int layer = 0; layer < NUM_LAYERS; layer++) {
+    for (int layer = 0; layer < transformer->num_layers; layer++) {
         Attention* current_attn = transformer->attention_layers[layer];
         MLP* current_mlp = transformer->mlp_layers[layer];
         
@@ -69,7 +76,7 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
 // Calculate loss
 float calculate_loss_transformer(Transformer* transformer, float* d_y) {
     // Loss is calculated against the final output
-    MLP* final_mlp = transformer->mlp_layers[NUM_LAYERS-1];
+    MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
     float loss = 0.0f;
     int total_size = final_mlp->batch_size * final_mlp->seq_len * final_mlp->output_dim;
 
@@ -89,7 +96,7 @@ float calculate_loss_transformer(Transformer* transformer, float* d_y) {
 
 // Zero gradients
 void zero_gradients_transformer(Transformer* transformer) {
-    for (int i = 0; i < NUM_LAYERS; i++) {
+    for (int i = 0; i < transformer->num_layers; i++) {
         zero_gradients_attention(transformer->attention_layers[i]);
         zero_gradients_mlp(transformer->mlp_layers[i]);
     }
@@ -102,7 +109,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
     int total_seq = transformer->batch_size * transformer->seq_len;
     
     // Backward pass through layers in reverse order
-    for (int layer = NUM_LAYERS - 1; layer >= 0; layer--) {
+    for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
         Attention* current_attn = transformer->attention_layers[layer];
         MLP* current_mlp = transformer->mlp_layers[layer];
         
@@ -172,7 +179,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
 
 // Update weights
 void update_weights_transformer(Transformer* transformer, float learning_rate) {
-    for (int i = 0; i < NUM_LAYERS; i++) {
+    for (int i = 0; i < transformer->num_layers; i++) {
         update_weights_attention(transformer->attention_layers[i], learning_rate);
         update_weights_mlp(transformer->mlp_layers[i], learning_rate);
     }
@@ -192,7 +199,7 @@ void save_transformer(Transformer* transformer, const char* filename) {
     }
     
     // Save all layers
-    for (int i = 0; i < NUM_LAYERS; i++) {
+    for (int i = 0; i < transformer->num_layers; i++) {
         // Save attention module
         char attn_filename[300];
         snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base, i);
@@ -215,6 +222,7 @@ void save_transformer(Transformer* transformer, const char* filename) {
     fwrite(&transformer->seq_len, sizeof(int), 1, file);
     fwrite(&transformer->batch_size, sizeof(int), 1, file);
     fwrite(&transformer->mlp_hidden, sizeof(int), 1, file);
+    fwrite(&transformer->num_layers, sizeof(int), 1, file);
     
     fclose(file);
     printf("Model saved to %s\n", filename);
@@ -229,11 +237,12 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         return NULL;
     }
     
-    int d_model, seq_len, stored_batch_size, mlp_hidden;
+    int d_model, seq_len, stored_batch_size, mlp_hidden, num_layers;
     fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&mlp_hidden, sizeof(int), 1, file);
+    fread(&num_layers, sizeof(int), 1, file);
     
     fclose(file);
     
@@ -252,15 +261,14 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     }
     
     // Create transformer structure
-    Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
-    transformer->d_model = d_model;
-    transformer->seq_len = seq_len;
-    transformer->batch_size = batch_size;
-    transformer->mlp_hidden = mlp_hidden;
-    transformer->cublas_handle = cublas_handle;
+    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, cublas_handle);
     
     // Load all layers
-    for (int i = 0; i < NUM_LAYERS; i++) {
+    for (int i = 0; i < num_layers; i++) {
+        // Free the initialized layers first
+        free_attention(transformer->attention_layers[i]);
+        free_mlp(transformer->mlp_layers[i]);
+        
         // Load attention module
         char attn_filename[300];
         snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base, i);

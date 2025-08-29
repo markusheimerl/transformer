@@ -24,7 +24,7 @@ void train_model(Transformer* transformer, float* X, float* y, int num_samples, 
     
     printf("Starting training...\n");
     printf("Architecture: %d layers, d_model=%d, seq_len=%d, mlp_hidden=%d, batch_size=%d, num_samples=%d, num_batches=%d\n\n", 
-           NUM_LAYERS, transformer->d_model, transformer->seq_len, transformer->mlp_hidden, batch_size, num_samples, num_batches);
+           transformer->num_layers, transformer->d_model, transformer->seq_len, transformer->mlp_hidden, batch_size, num_samples, num_batches);
     
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
         float total_loss = 0.0f;
@@ -84,9 +84,8 @@ void evaluate_model(Transformer* transformer, float* X_eval, int eval_samples, i
         forward_pass_transformer(transformer, d_X);
         
         // Copy predictions back to host
-        MLP* final_mlp = transformer->mlp_layers[NUM_LAYERS-1];
-        CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, 
-                             seq_size * sizeof(float), cudaMemcpyDeviceToHost));
+        MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
+        CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, seq_size * sizeof(float), cudaMemcpyDeviceToHost));
         
         // Evaluate predictions for this batch
         for (int sample = 0; sample < batch_size; sample++) {
@@ -148,7 +147,7 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
     forward_pass_transformer(transformer, d_X);
     
     // Copy predictions back to host
-    MLP* final_mlp = transformer->mlp_layers[NUM_LAYERS-1];
+    MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
     CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, 
                          seq_size * sizeof(float), cudaMemcpyDeviceToHost));
     
@@ -232,7 +231,7 @@ int main() {
     CHECK_CUBLAS(cublasCreate(&cublas_handle));
     CHECK_CUBLAS(cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH));
 
-    const int seq_len = 16, feature_dim = 8, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
+    const int seq_len = 16, feature_dim = 8, num_layers = 3, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
     
     // Generate training data
     float *X, *y;
@@ -240,7 +239,7 @@ int main() {
     print_data_samples(X, y, seq_len, feature_dim);
     
     // Initialize and train transformer
-    Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, cublas_handle);
+    Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, num_layers, cublas_handle);
     train_model(transformer, X, y, num_samples, batch_size, 50, 0.001f);
 
     // Get timestamp and save model
