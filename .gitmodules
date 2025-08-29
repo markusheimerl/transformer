@@ -1,0 +1,6 @@
+[submodule "mlp"]
+	path = mlp
+	url = https://github.com/markusheimerl/mlp
+[submodule "attention"]
+	path = attention
+	url = https://github.com/markusheimerl/attention
