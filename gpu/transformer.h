@@ -8,7 +8,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include "../attention/gpu/attention.h"
-#include "mlp.h"
+#include "../mlp/gpu/mlp.h"
 
 // CUDA Error checking macro
 #ifndef CHECK_CUDA

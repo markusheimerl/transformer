@@ -19,7 +19,7 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
         transformer->attention_layers[i] = init_attention(d_model, seq_len, batch_size, cublas_handle);
-        transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size, seq_len, cublas_handle);
+        transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size * seq_len, cublas_handle);
     }
     
     return transformer;
@@ -78,13 +78,13 @@ float calculate_loss_transformer(Transformer* transformer, float* d_y) {
     // Loss is calculated against the final output
     MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
     float loss = 0.0f;
-    int total_size = final_mlp->batch_size * final_mlp->seq_len * final_mlp->output_dim;
+    int total_size = final_mlp->batch_size * final_mlp->output_dim;
 
     const float alpha = 1.0f;
     const float beta = -1.0f;
     CHECK_CUBLAS(cublasSgeam(final_mlp->cublas_handle, 
                             CUBLAS_OP_N, CUBLAS_OP_N,
-                            final_mlp->output_dim, final_mlp->batch_size * final_mlp->seq_len,
+                            final_mlp->output_dim, final_mlp->batch_size,
                             &alpha, final_mlp->d_layer_output, final_mlp->output_dim,
                             &beta, d_y, final_mlp->output_dim,
                             final_mlp->d_error_output, final_mlp->output_dim));
@@ -277,7 +277,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         // Load MLP module
         char mlp_filename[300];
         snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base, i);
-        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size, cublas_handle);
+        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle);
     }
     
     printf("Model loaded from %s\n", filename);
