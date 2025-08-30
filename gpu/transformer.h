@@ -48,6 +48,9 @@ typedef struct {
     int batch_size;   // Batch size
     int mlp_hidden;   // MLP hidden dimension
     int num_layers;   // Number of transformer layers
+    
+    // Residual scaling
+    float residual_scale;
 } Transformer;
 
 // Function prototypes

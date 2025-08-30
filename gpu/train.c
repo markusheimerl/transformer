@@ -240,7 +240,7 @@ int main() {
     
     // Initialize and train transformer
     Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, num_layers, cublas_handle);
-    train_model(transformer, X, y, num_samples, batch_size, 50, 0.001f);
+    train_model(transformer, X, y, num_samples, batch_size, 500, 0.0003f);
 
     // Get timestamp and save model
     char model_fname[64], data_fname[64];

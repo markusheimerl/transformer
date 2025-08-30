@@ -12,6 +12,9 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     transformer->num_layers = num_layers;
     transformer->cublas_handle = cublas_handle;
     
+    // Initialize residual scaling (common values: 1/sqrt(2) ≈ 0.707 or 1/sqrt(num_layers))
+    transformer->residual_scale = 0.1f; //1.0f / sqrtf(2.0f);
+    
     // Allocate arrays for layers
     transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
     transformer->mlp_layers = (MLP**)malloc(num_layers * sizeof(MLP*));
@@ -52,23 +55,23 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
         // Step 1: Attention layer
         forward_pass_attention(current_attn, layer_input);
         
-        // Step 2: First residual connection - attention_output += input
+        // Step 2: First residual connection - attention_output += residual_scale * input
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
                                 &alpha, current_attn->d_layer_output, transformer->d_model,
-                                &alpha, layer_input, transformer->d_model,
+                                &transformer->residual_scale, layer_input, transformer->d_model,
                                 current_attn->d_layer_output, transformer->d_model));
         
         // Step 3: MLP layer
         forward_pass_mlp(current_mlp, current_attn->d_layer_output);
         
-        // Step 4: Second residual connection - mlp_output += attention_output
+        // Step 4: Second residual connection - mlp_output += residual_scale * attention_output
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
                                 &alpha, current_mlp->d_layer_output, transformer->d_model,
-                                &alpha, current_attn->d_layer_output, transformer->d_model,
+                                &transformer->residual_scale, current_attn->d_layer_output, transformer->d_model,
                                 current_mlp->d_layer_output, transformer->d_model));
     }
 }
@@ -132,7 +135,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
                                 &alpha, current_attn->d_error_output, transformer->d_model,
-                                &alpha, current_mlp->d_error_output, transformer->d_model,
+                                &transformer->residual_scale, current_mlp->d_error_output, transformer->d_model,
                                 current_attn->d_error_output, transformer->d_model));
         
         // Step 4: Backward pass through current attention
@@ -171,7 +174,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                                     CUBLAS_OP_N, CUBLAS_OP_N,
                                     transformer->d_model, total_seq,
                                     &alpha, prev_mlp->d_error_output, transformer->d_model,
-                                    &alpha, current_attn->d_error_output, transformer->d_model,
+                                    &transformer->residual_scale, current_attn->d_error_output, transformer->d_model,
                                     prev_mlp->d_error_output, transformer->d_model));
         }
     }
@@ -223,6 +226,7 @@ void save_transformer(Transformer* transformer, const char* filename) {
     fwrite(&transformer->batch_size, sizeof(int), 1, file);
     fwrite(&transformer->mlp_hidden, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
+    fwrite(&transformer->residual_scale, sizeof(float), 1, file);
     
     fclose(file);
     printf("Model saved to %s\n", filename);
@@ -238,11 +242,13 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     }
     
     int d_model, seq_len, stored_batch_size, mlp_hidden, num_layers;
+    float residual_scale;
     fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&mlp_hidden, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
+    fread(&residual_scale, sizeof(float), 1, file);
     
     fclose(file);
     
@@ -262,6 +268,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     
     // Create transformer structure
     Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, cublas_handle);
+    transformer->residual_scale = residual_scale;
     
     // Load all layers
     for (int i = 0; i < num_layers; i++) {
