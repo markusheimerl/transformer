@@ -15,11 +15,15 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     // Allocate arrays for layers
     transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
     transformer->mlp_layers = (MLP**)malloc(num_layers * sizeof(MLP*));
+    transformer->pre_attn_norm_layers = (RMSNorm**)malloc(num_layers * sizeof(RMSNorm*));
+    transformer->pre_mlp_norm_layers = (RMSNorm**)malloc(num_layers * sizeof(RMSNorm*));
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
         transformer->attention_layers[i] = init_attention(d_model, seq_len, batch_size, cublas_handle);
         transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size, seq_len, cublas_handle);
+        transformer->pre_attn_norm_layers[i] = init_rms_norm(d_model, batch_size, seq_len, cublas_handle);
+        transformer->pre_mlp_norm_layers[i] = init_rms_norm(d_model, batch_size, seq_len, cublas_handle);
     }
     
     return transformer;
@@ -30,9 +34,13 @@ void free_transformer(Transformer* transformer) {
     for (int i = 0; i < transformer->num_layers; i++) {
         free_attention(transformer->attention_layers[i]);
         free_mlp(transformer->mlp_layers[i]);
+        free_rms_norm(transformer->pre_attn_norm_layers[i]);
+        free_rms_norm(transformer->pre_mlp_norm_layers[i]);
     }
     free(transformer->attention_layers);
     free(transformer->mlp_layers);
+    free(transformer->pre_attn_norm_layers);
+    free(transformer->pre_mlp_norm_layers);
     free(transformer);
 }
 
@@ -45,14 +53,19 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
     for (int layer = 0; layer < transformer->num_layers; layer++) {
         Attention* current_attn = transformer->attention_layers[layer];
         MLP* current_mlp = transformer->mlp_layers[layer];
+        RMSNorm* pre_attn_norm = transformer->pre_attn_norm_layers[layer];
+        RMSNorm* pre_mlp_norm = transformer->pre_mlp_norm_layers[layer];
         
         // Determine input for this layer
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
         
-        // Step 1: Attention layer
-        forward_pass_attention(current_attn, layer_input);
+        // Step 1: Pre-attention norm
+        forward_pass_rms_norm(pre_attn_norm, layer_input);
         
-        // Step 2: First residual connection - attention_output += input
+        // Step 2: Attention layer
+        forward_pass_attention(current_attn, pre_attn_norm->d_output);
+        
+        // Step 3: First residual connection - attention_output += input
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
@@ -60,10 +73,13 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
                                 &alpha, layer_input, transformer->d_model,
                                 current_attn->d_layer_output, transformer->d_model));
         
-        // Step 3: MLP layer
-        forward_pass_mlp(current_mlp, current_attn->d_layer_output);
+        // Step 4: Pre-MLP norm
+        forward_pass_rms_norm(pre_mlp_norm, current_attn->d_layer_output);
         
-        // Step 4: Second residual connection - mlp_output += attention_output
+        // Step 5: MLP layer
+        forward_pass_mlp(current_mlp, pre_mlp_norm->d_output);
+        
+        // Step 6: Second residual connection - mlp_output += attention_output
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
@@ -99,6 +115,8 @@ void zero_gradients_transformer(Transformer* transformer) {
     for (int i = 0; i < transformer->num_layers; i++) {
         zero_gradients_attention(transformer->attention_layers[i]);
         zero_gradients_mlp(transformer->mlp_layers[i]);
+        zero_gradients_rms_norm(transformer->pre_attn_norm_layers[i]);
+        zero_gradients_rms_norm(transformer->pre_mlp_norm_layers[i]);
     }
 }
 
@@ -112,66 +130,86 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
     for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
         Attention* current_attn = transformer->attention_layers[layer];
         MLP* current_mlp = transformer->mlp_layers[layer];
+        RMSNorm* pre_attn_norm = transformer->pre_attn_norm_layers[layer];
+        RMSNorm* pre_mlp_norm = transformer->pre_mlp_norm_layers[layer];
         
         // Determine the layer input that was used in forward pass
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
         
         // Step 1: Backward pass through current MLP
-        backward_pass_mlp(current_mlp, current_attn->d_layer_output);
+        backward_pass_mlp(current_mlp, pre_mlp_norm->d_output);
         
-        // Step 2: Compute gradient w.r.t. MLP input and store in attention error buffer
+        // Step 2: Compute gradient w.r.t. MLP input and store in pre-MLP norm error buffer
         CHECK_CUBLAS(cublasSgemm(current_mlp->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq, transformer->mlp_hidden,
                                 &alpha, current_mlp->d_W1, transformer->d_model,
                                 current_mlp->d_error_hidden, transformer->mlp_hidden,
-                                &beta, current_attn->d_error_output, transformer->d_model));
+                                &beta, pre_mlp_norm->d_error_output, transformer->d_model));
         
-        // Step 3: Add gradient from residual connection
+        // Step 3: Add gradient from MLP residual connection
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
-                                &alpha, current_attn->d_error_output, transformer->d_model,
+                                &alpha, pre_mlp_norm->d_error_output, transformer->d_model,
                                 &alpha, current_mlp->d_error_output, transformer->d_model,
+                                pre_mlp_norm->d_error_output, transformer->d_model));
+        
+        // Step 4: Backward pass through pre-MLP norm
+        backward_pass_rms_norm(pre_mlp_norm, current_attn->d_layer_output);
+        
+        // Step 5: Copy pre-MLP norm gradient to attention error buffer
+        CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
+                                CUBLAS_OP_N, CUBLAS_OP_N,
+                                transformer->d_model, total_seq,
+                                &alpha, pre_mlp_norm->d_grad_input, transformer->d_model,
+                                &beta, current_attn->d_error_output, transformer->d_model,
                                 current_attn->d_error_output, transformer->d_model));
         
-        // Step 4: Backward pass through current attention
-        backward_pass_attention(current_attn, layer_input);
+        // Step 6: Backward pass through current attention
+        backward_pass_attention(current_attn, pre_attn_norm->d_output);
         
+        // Step 7: Compute gradient w.r.t. attention input and store in pre-attention norm error buffer
+        CHECK_CUBLAS(cublasSgemm(current_attn->cublas_handle,
+                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                transformer->d_model, total_seq, transformer->d_model,
+                                &alpha, current_attn->d_W_q, transformer->d_model,
+                                current_attn->d_grad_Q, transformer->d_model,
+                                &beta, pre_attn_norm->d_error_output, transformer->d_model));
+        
+        CHECK_CUBLAS(cublasSgemm(current_attn->cublas_handle,
+                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                transformer->d_model, total_seq, transformer->d_model,
+                                &alpha, current_attn->d_W_k, transformer->d_model,
+                                current_attn->d_grad_K, transformer->d_model,
+                                &alpha, pre_attn_norm->d_error_output, transformer->d_model));
+        
+        CHECK_CUBLAS(cublasSgemm(current_attn->cublas_handle,
+                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                transformer->d_model, total_seq, transformer->d_model,
+                                &alpha, current_attn->d_W_v, transformer->d_model,
+                                current_attn->d_grad_V, transformer->d_model,
+                                &alpha, pre_attn_norm->d_error_output, transformer->d_model));
+        
+        // Step 8: Add gradient from attention residual connection
+        CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
+                                CUBLAS_OP_N, CUBLAS_OP_N,
+                                transformer->d_model, total_seq,
+                                &alpha, pre_attn_norm->d_error_output, transformer->d_model,
+                                &alpha, current_attn->d_error_output, transformer->d_model,
+                                pre_attn_norm->d_error_output, transformer->d_model));
+        
+        // Step 9: Backward pass through pre-attention norm
+        backward_pass_rms_norm(pre_attn_norm, layer_input);
+        
+        // Step 10: Propagate gradient to previous layer if not first layer
         if (layer > 0) {
-            // Step 5: Compute gradient w.r.t. attention input and store in the previous layer's MLP error buffer
             MLP* prev_mlp = transformer->mlp_layers[layer-1];
-            
-            // ∂L/∂X = (∂L/∂Q)W_q^T
-            CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq, transformer->d_model,
-                                    &alpha, current_attn->d_W_q, transformer->d_model,
-                                    current_attn->d_grad_Q, transformer->d_model,
-                                    &beta, prev_mlp->d_error_output, transformer->d_model));
-            
-            // ∂L/∂X += (∂L/∂K)W_k^T
-            CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq, transformer->d_model,
-                                    &alpha, current_attn->d_W_k, transformer->d_model,
-                                    current_attn->d_grad_K, transformer->d_model,
-                                    &alpha, prev_mlp->d_error_output, transformer->d_model));
-            
-            // ∂L/∂X += (∂L/∂V)W_v^T
-            CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq, transformer->d_model,
-                                    &alpha, current_attn->d_W_v, transformer->d_model,
-                                    current_attn->d_grad_V, transformer->d_model,
-                                    &alpha, prev_mlp->d_error_output, transformer->d_model));
-            
-            // Step 6: Add gradient from residual connection
             CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                     CUBLAS_OP_N, CUBLAS_OP_N,
                                     transformer->d_model, total_seq,
-                                    &alpha, prev_mlp->d_error_output, transformer->d_model,
-                                    &alpha, current_attn->d_error_output, transformer->d_model,
+                                    &alpha, pre_attn_norm->d_grad_input, transformer->d_model,
+                                    &beta, prev_mlp->d_error_output, transformer->d_model,
                                     prev_mlp->d_error_output, transformer->d_model));
         }
     }
@@ -182,6 +220,8 @@ void update_weights_transformer(Transformer* transformer, float learning_rate) {
     for (int i = 0; i < transformer->num_layers; i++) {
         update_weights_attention(transformer->attention_layers[i], learning_rate);
         update_weights_mlp(transformer->mlp_layers[i], learning_rate);
+        update_weights_rms_norm(transformer->pre_attn_norm_layers[i], learning_rate);
+        update_weights_rms_norm(transformer->pre_mlp_norm_layers[i], learning_rate);
     }
 }
 
@@ -209,6 +249,16 @@ void save_transformer(Transformer* transformer, const char* filename) {
         char mlp_filename[300];
         snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base, i);
         save_mlp(transformer->mlp_layers[i], mlp_filename);
+        
+        // Save pre-attention RMSNorm module
+        char pre_attn_norm_filename[300];
+        snprintf(pre_attn_norm_filename, sizeof(pre_attn_norm_filename), "%s_pre_attn_norm%d.bin", base, i);
+        save_rms_norm(transformer->pre_attn_norm_layers[i], pre_attn_norm_filename);
+        
+        // Save pre-MLP RMSNorm module
+        char pre_mlp_norm_filename[300];
+        snprintf(pre_mlp_norm_filename, sizeof(pre_mlp_norm_filename), "%s_pre_mlp_norm%d.bin", base, i);
+        save_rms_norm(transformer->pre_mlp_norm_layers[i], pre_mlp_norm_filename);
     }
     
     // Save transformer metadata
@@ -225,7 +275,7 @@ void save_transformer(Transformer* transformer, const char* filename) {
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
     
     fclose(file);
-    printf("Model saved to %s\n", filename);
+    printf("Transformer saved to %s\n", filename);
 }
 
 // Load transformer from binary files
@@ -268,6 +318,8 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         // Free the initialized layers first
         free_attention(transformer->attention_layers[i]);
         free_mlp(transformer->mlp_layers[i]);
+        free_rms_norm(transformer->pre_attn_norm_layers[i]);
+        free_rms_norm(transformer->pre_mlp_norm_layers[i]);
         
         // Load attention module
         char attn_filename[300];
@@ -278,8 +330,18 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         char mlp_filename[300];
         snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base, i);
         transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size, cublas_handle);
+        
+        // Load pre-attention RMSNorm module
+        char pre_attn_norm_filename[300];
+        snprintf(pre_attn_norm_filename, sizeof(pre_attn_norm_filename), "%s_pre_attn_norm%d.bin", base, i);
+        transformer->pre_attn_norm_layers[i] = load_rms_norm(pre_attn_norm_filename, batch_size, seq_len, cublas_handle);
+        
+        // Load pre-MLP RMSNorm module
+        char pre_mlp_norm_filename[300];
+        snprintf(pre_mlp_norm_filename, sizeof(pre_mlp_norm_filename), "%s_pre_mlp_norm%d.bin", base, i);
+        transformer->pre_mlp_norm_layers[i] = load_rms_norm(pre_mlp_norm_filename, batch_size, seq_len, cublas_handle);
     }
     
-    printf("Model loaded from %s\n", filename);
+    printf("Transformer loaded from %s\n", filename);
     return transformer;
 }

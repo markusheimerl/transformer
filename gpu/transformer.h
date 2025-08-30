@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 #include "../attention/gpu/attention.h"
 #include "mlp.h"
+#include "rmsnorm.h"
 
 // CUDA Error checking macro
 #ifndef CHECK_CUDA
@@ -38,6 +39,8 @@ typedef struct {
     // Component modules
     Attention** attention_layers;
     MLP** mlp_layers;
+    RMSNorm** pre_attn_norm_layers;
+    RMSNorm** pre_mlp_norm_layers;
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;

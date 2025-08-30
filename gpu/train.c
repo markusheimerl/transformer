@@ -231,7 +231,7 @@ int main() {
     CHECK_CUBLAS(cublasCreate(&cublas_handle));
     CHECK_CUBLAS(cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH));
 
-    const int seq_len = 16, feature_dim = 8, num_layers = 3, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
+    const int seq_len = 16, feature_dim = 8, num_layers = 1, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
     
     // Generate training data
     float *X, *y;
