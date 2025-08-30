@@ -6,8 +6,8 @@ ARCH ?= sm_86
 CUDAFLAGS = --cuda-gpu-arch=$(ARCH) -x cuda -Wno-unknown-cuda-version
 CUDALIBS = -L/usr/local/cuda/lib64 -lcudart -lcublas
 
-train.out: transformer.o attention.o mlp.o data.o train.o
-	$(CC) transformer.o attention.o mlp.o data.o train.o $(CUDALIBS) $(LDFLAGS) -o $@
+train.out: transformer.o attention.o mlp.o layernorm.o data.o train.o
+	$(CC) transformer.o attention.o mlp.o layernorm.o data.o train.o $(CUDALIBS) $(LDFLAGS) -o $@
 
 transformer.o: transformer.c transformer.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c transformer.c -o $@
@@ -17,6 +17,9 @@ attention.o: ../attention/gpu/attention.c ../attention/gpu/attention.h
 
 mlp.o: mlp.c mlp.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c mlp.c -o $@
+
+layernorm.o: layernorm.c layernorm.h
+	$(CC) $(CFLAGS) $(CUDAFLAGS) -c layernorm.c -o $@
 
 data.o: ../attention/data.c ../attention/data.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../attention/data.c -o $@

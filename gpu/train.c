@@ -147,8 +147,7 @@ void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_
     forward_pass_transformer(transformer, d_X);
     
     // Copy predictions back to host
-    MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
-    CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, 
+    CHECK_CUDA(cudaMemcpy(predictions, transformer->mlp_layers[transformer->num_layers-1]->d_layer_output, 
                          seq_size * sizeof(float), cudaMemcpyDeviceToHost));
     
     // Print sample predictions
