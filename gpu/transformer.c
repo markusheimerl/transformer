@@ -1,7 +1,7 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, cublasHandle_t cublas_handle) {
+Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
     // Store dimensions
@@ -18,7 +18,7 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
-        transformer->attention_layers[i] = init_attention(d_model, seq_len, batch_size, cublas_handle);
+        transformer->attention_layers[i] = init_attention(d_model, seq_len, batch_size, is_causal, cublas_handle);
         transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size * seq_len, cublas_handle);
     }
     
@@ -261,7 +261,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     }
     
     // Create transformer structure
-    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, cublas_handle);
+    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle);
     
     // Load all layers
     for (int i = 0; i < num_layers; i++) {

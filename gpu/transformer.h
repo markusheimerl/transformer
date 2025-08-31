@@ -51,7 +51,7 @@ typedef struct {
 } Transformer;
 
 // Function prototypes
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, cublasHandle_t cublas_handle);
+Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle);
 void free_transformer(Transformer* transformer);
 void forward_pass_transformer(Transformer* transformer, float* d_X);
 float calculate_loss_transformer(Transformer* transformer, float* d_y);

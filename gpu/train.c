@@ -239,7 +239,7 @@ int main() {
     print_data_samples(X, y, seq_len, feature_dim);
     
     // Initialize and train transformer
-    Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, num_layers, cublas_handle);
+    Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle);
     train_model(transformer, X, y, num_samples, batch_size, 50, 0.001f);
 
     // Get timestamp and save model
