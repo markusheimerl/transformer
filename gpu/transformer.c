@@ -128,6 +128,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
         
         // Step 3: Backward pass through current attention
         if (layer > 0) {
+            // For intermediate layers, write gradient to previous layer's MLP error buffer
             MLP* prev_mlp = transformer->mlp_layers[layer-1];
             backward_pass_attention(current_attn, layer_input, prev_mlp->d_error_output);
             
@@ -139,6 +140,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                                     &alpha, current_attn->d_error_output, transformer->d_model,
                                     prev_mlp->d_error_output, transformer->d_model));
         } else {
+            // For the first layer, we don't need gradient w.r.t. input
             backward_pass_attention(current_attn, layer_input, NULL);
         }
     }
