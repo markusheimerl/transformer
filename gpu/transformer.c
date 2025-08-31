@@ -105,7 +105,6 @@ void zero_gradients_transformer(Transformer* transformer) {
 // Backward pass
 void backward_pass_transformer(Transformer* transformer, float* d_X) {
     const float alpha = 1.0f;
-    const float beta = 0.0f;
     int total_seq = transformer->batch_size * transformer->seq_len;
     
     // Backward pass through layers in reverse order
@@ -117,17 +116,9 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
         
         // Step 1: Backward pass through current MLP
-        backward_pass_mlp(current_mlp, current_attn->d_layer_output);
+        backward_pass_mlp(current_mlp, current_attn->d_layer_output, current_attn->d_error_output);
         
-        // Step 2: Compute gradient w.r.t. MLP input and store in attention error buffer
-        CHECK_CUBLAS(cublasSgemm(current_mlp->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                transformer->d_model, total_seq, transformer->mlp_hidden,
-                                &alpha, current_mlp->d_W1, transformer->d_model,
-                                current_mlp->d_error_hidden, transformer->mlp_hidden,
-                                &beta, current_attn->d_error_output, transformer->d_model));
-        
-        // Step 3: Add gradient from residual connection
+        // Step 2: Add gradient from residual connection
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
@@ -135,44 +126,20 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                                 &alpha, current_mlp->d_error_output, transformer->d_model,
                                 current_attn->d_error_output, transformer->d_model));
         
-        // Step 4: Backward pass through current attention
-        backward_pass_attention(current_attn, layer_input);
-        
+        // Step 3: Backward pass through current attention
         if (layer > 0) {
-            // Step 5: Compute gradient w.r.t. attention input and store in the previous layer's MLP error buffer
             MLP* prev_mlp = transformer->mlp_layers[layer-1];
+            backward_pass_attention(current_attn, layer_input, prev_mlp->d_error_output);
             
-            // ∂L/∂X = (∂L/∂Q)W_q^T
-            CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq, transformer->d_model,
-                                    &alpha, current_attn->d_W_q, transformer->d_model,
-                                    current_attn->d_grad_Q, transformer->d_model,
-                                    &beta, prev_mlp->d_error_output, transformer->d_model));
-            
-            // ∂L/∂X += (∂L/∂K)W_k^T
-            CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq, transformer->d_model,
-                                    &alpha, current_attn->d_W_k, transformer->d_model,
-                                    current_attn->d_grad_K, transformer->d_model,
-                                    &alpha, prev_mlp->d_error_output, transformer->d_model));
-            
-            // ∂L/∂X += (∂L/∂V)W_v^T
-            CHECK_CUBLAS(cublasSgemm(transformer->cublas_handle,
-                                    CUBLAS_OP_T, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq, transformer->d_model,
-                                    &alpha, current_attn->d_W_v, transformer->d_model,
-                                    current_attn->d_grad_V, transformer->d_model,
-                                    &alpha, prev_mlp->d_error_output, transformer->d_model));
-            
-            // Step 6: Add gradient from residual connection
+            // Step 4: Add gradient from residual connection
             CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                     CUBLAS_OP_N, CUBLAS_OP_N,
                                     transformer->d_model, total_seq,
                                     &alpha, prev_mlp->d_error_output, transformer->d_model,
                                     &alpha, current_attn->d_error_output, transformer->d_model,
                                     prev_mlp->d_error_output, transformer->d_model));
+        } else {
+            backward_pass_attention(current_attn, layer_input, NULL);
         }
     }
 }
