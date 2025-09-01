@@ -5,14 +5,6 @@
 #include "../attention/data.h"
 #include "transformer.h"
 
-void print_data_samples(float* X, float* y, int seq_len, int feature_dim) {
-    printf("Sample data for inspection:\n");
-    printf("============================\n");
-    for (int i = 0; i < 3; i++) {
-        print_sample_data(X, y, i, seq_len, feature_dim);
-    }
-}
-
 void train_model(Transformer* transformer, float* X, float* y, int num_samples, int batch_size, int num_epochs, float learning_rate) {
     const int num_batches = (num_samples + batch_size - 1) / batch_size;
     
@@ -231,12 +223,11 @@ int main() {
     CHECK_CUBLAS(cublasCreate(&cublas_handle));
     CHECK_CUBLAS(cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH));
 
-    const int seq_len = 16, feature_dim = 8, num_layers = 3, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
+    const int seq_len = 16, feature_dim = 8, num_layers = 2, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
     
     // Generate training data
     float *X, *y;
-    generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
-    print_data_samples(X, y, seq_len, feature_dim);
+    generate_data(&X, &y, num_samples, seq_len, feature_dim);
     
     // Initialize and train transformer
     Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle);
@@ -270,7 +261,7 @@ int main() {
     printf("\nGenerating new evaluation dataset...\n");
     const int eval_samples = 2048;
     float *X_eval, *y_eval;
-    generate_attention_data(&X_eval, &y_eval, eval_samples, seq_len, feature_dim);
+    generate_data(&X_eval, &y_eval, eval_samples, seq_len, feature_dim);
     
     printf("\nEvaluating model performance on NEW data...\n");
     evaluate_model(loaded_transformer, X_eval, eval_samples, seq_len, feature_dim, batch_size);
