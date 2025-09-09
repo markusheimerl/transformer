@@ -15,7 +15,7 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int batc
     // Initialize attention layer
     transformer->attention = init_attention(seq_len, d_model, batch_size, is_causal, cublas_handle, cublaslt_handle);
     
-    // Initialize MLP layer (input_dim = d_model, output_dim = d_model)
+    // Initialize MLP layer
     transformer->mlp = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len, cublas_handle, cublaslt_handle);
     
     return transformer;
@@ -28,12 +28,12 @@ void free_transformer(Transformer* transformer) {
     free(transformer);
 }
 
-// Forward pass: X -> Attention -> MLP -> Output
+// Forward pass
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
     // Step 1: Attention layer
     forward_pass_attention(transformer->attention, d_X);
     
-    // Step 2: MLP layer (use attention output directly)
+    // Step 2: MLP layer
     forward_pass_mlp(transformer->mlp, transformer->attention->d_output);
 }
 
@@ -50,10 +50,10 @@ void zero_gradients_transformer(Transformer* transformer) {
 
 // Backward pass: MLP -> Attention
 void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X) {
-    // Step 1: Backward through MLP (this computes gradients for MLP weights and writes to mlp->d_grad_output)
+    // Step 1: Backward through MLP
     backward_pass_mlp(transformer->mlp, transformer->attention->d_output, transformer->attention->d_grad_output);
     
-    // Step 2: Backward through attention (uses attention->d_grad_output directly)
+    // Step 2: Backward through attention
     backward_pass_attention(transformer->attention, d_X, d_grad_X);
 }
 

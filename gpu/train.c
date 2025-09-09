@@ -18,7 +18,7 @@ int main() {
     // Parameters
     const int seq_len = 128;
     const int d_model = 64;
-    const int hidden_dim = 256;  // MLP hidden dimension
+    const int hidden_dim = 256;
     const int num_samples = 1024;
     const int batch_size = 32;
     

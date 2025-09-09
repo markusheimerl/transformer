@@ -17,7 +17,7 @@ typedef struct {
     Attention* attention;
     MLP* mlp;
     
-    // cuBLAS handles (shared with components)
+    // cuBLAS handles
     cublasHandle_t cublas_handle;
     cublasLtHandle_t cublaslt_handle;
     
@@ -25,7 +25,7 @@ typedef struct {
     int seq_len;
     int d_model;
     int batch_size;
-    int hidden_dim;  // MLP hidden dimension
+    int hidden_dim;
 } Transformer;
 
 // Function prototypes
