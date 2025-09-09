@@ -6,19 +6,19 @@ ARCH ?= sm_86
 CUDAFLAGS = --cuda-gpu-arch=$(ARCH) -x cuda -Wno-unknown-cuda-version
 CUDALIBS = -L/usr/local/cuda/lib64 -lcudart -lcublas -lcublasLt
 
-train.out: transformer.o attention.o mlp.o data.o train.o
-	$(CC) transformer.o attention.o mlp.o data.o train.o $(CUDALIBS) $(LDFLAGS) -o $@
+train.out: transformer.o ../attention/gpu/attention.o ../mlp/gpu/mlp.o ../data.o train.o
+	$(CC) transformer.o ../attention/gpu/attention.o ../mlp/gpu/mlp.o ../data.o train.o $(CUDALIBS) $(LDFLAGS) -o $@
 
 transformer.o: transformer.c transformer.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c transformer.c -o $@
 
-attention.o: ../attention/gpu/attention.c ../attention/gpu/attention.h
-	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../attention/gpu/attention.c -o $@
+../attention/gpu/attention.o:
+	$(MAKE) -C ../attention/gpu attention.o
 
-mlp.o: ../mlp/gpu/mlp.c ../mlp/gpu/mlp.h
-	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../mlp/gpu/mlp.c -o $@
+../mlp/gpu/mlp.o:
+	$(MAKE) -C ../mlp/gpu mlp.o
 
-data.o: ../data.c ../data.h
+../data.o: ../data.c ../data.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c ../data.c -o $@
 
 train.o: train.c transformer.h ../data.h
@@ -29,3 +29,5 @@ run: train.out
 
 clean:
 	rm -f *.out *.o *.csv *.bin
+	$(MAKE) -C ../attention/gpu clean
+	$(MAKE) -C ../mlp/gpu clean
