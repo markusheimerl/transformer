@@ -1,99 +1,84 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
+Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
-    // Store dimensions
-    transformer->d_model = d_model;
+    // Store dimensions and handles
     transformer->seq_len = seq_len;
+    transformer->d_model = d_model;
     transformer->batch_size = batch_size;
-    transformer->mlp_hidden = mlp_hidden;
+    transformer->hidden_dim = hidden_dim;
     transformer->num_layers = num_layers;
-    transformer->is_causal = is_causal;
     transformer->cublas_handle = cublas_handle;
     transformer->cublaslt_handle = cublaslt_handle;
     
-    // Allocate arrays for layers
+    // Allocate arrays for layer components
     transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
     transformer->mlp_layers = (MLP**)malloc(num_layers * sizeof(MLP*));
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
         transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, cublas_handle, cublaslt_handle);
-        transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size * seq_len, cublas_handle, cublaslt_handle);
+        transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len, cublas_handle, cublaslt_handle);
     }
     
     return transformer;
 }
 
-// Free memory
+// Free transformer memory
 void free_transformer(Transformer* transformer) {
+    // Free all layers
     for (int i = 0; i < transformer->num_layers; i++) {
         free_attention(transformer->attention_layers[i]);
         free_mlp(transformer->mlp_layers[i]);
     }
+    
+    // Free layer arrays
     free(transformer->attention_layers);
     free(transformer->mlp_layers);
     free(transformer);
 }
 
+// CUDA kernel for in-place residual connection: a += b
+__global__ static void residual_add_kernel(float* a, float* b, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        a[idx] += b[idx];
+    }
+}
+
 // Forward pass
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
-    const float alpha = 1.0f;
-    int total_seq = transformer->batch_size * transformer->seq_len;
-
-    // Forward pass through layers
+    // Process each layer sequentially
     for (int layer = 0; layer < transformer->num_layers; layer++) {
-        Attention* current_attn = transformer->attention_layers[layer];
-        MLP* current_mlp = transformer->mlp_layers[layer];
-        
-        // Determine input for this layer
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
         
         // Step 1: Attention layer
-        forward_pass_attention(current_attn, layer_input);
+        forward_pass_attention(transformer->attention_layers[layer], layer_input);
         
         // Step 2: First residual connection - attention_output += input
-        CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                transformer->d_model, total_seq,
-                                &alpha, current_attn->d_output, transformer->d_model,
-                                &alpha, layer_input, transformer->d_model,
-                                current_attn->d_output, transformer->d_model));
+        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+            transformer->attention_layers[layer]->d_output, 
+            layer_input, 
+            transformer->batch_size * transformer->seq_len * transformer->d_model
+        );
         
-        // Step 3: MLP layer
-        forward_pass_mlp(current_mlp, current_attn->d_output);
+        // Step 3: MLP layer (input: attention->d_output)
+        forward_pass_mlp(transformer->mlp_layers[layer], transformer->attention_layers[layer]->d_output);
         
         // Step 4: Second residual connection - mlp_output += attention_output
-        CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                transformer->d_model, total_seq,
-                                &alpha, current_mlp->d_layer_output, transformer->d_model,
-                                &alpha, current_attn->d_output, transformer->d_model,
-                                current_mlp->d_layer_output, transformer->d_model));
+        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+            transformer->mlp_layers[layer]->d_layer_output, 
+            transformer->attention_layers[layer]->d_output, 
+            transformer->batch_size * transformer->seq_len * transformer->d_model
+        );
     }
 }
 
 // Calculate loss
 float calculate_loss_transformer(Transformer* transformer, float* d_y) {
-    // Loss is calculated against the final output
-    MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
-    float loss = 0.0f;
-    int total_size = final_mlp->batch_size * final_mlp->output_dim;
-
-    const float alpha = 1.0f;
-    const float beta = -1.0f;
-    CHECK_CUBLAS(cublasSgeam(final_mlp->cublas_handle, 
-                            CUBLAS_OP_N, CUBLAS_OP_N,
-                            final_mlp->output_dim, final_mlp->batch_size,
-                            &alpha, final_mlp->d_layer_output, final_mlp->output_dim,
-                            &beta, d_y, final_mlp->output_dim,
-                            final_mlp->d_grad_output, final_mlp->output_dim));
-    CHECK_CUBLAS(cublasSdot(final_mlp->cublas_handle, total_size, 
-                           final_mlp->d_grad_output, 1, final_mlp->d_grad_output, 1, &loss));
-    
-    return loss / total_size;
+    return calculate_loss_mlp(transformer->mlp_layers[transformer->num_layers - 1], d_y);
 }
 
 // Zero gradients
@@ -105,51 +90,39 @@ void zero_gradients_transformer(Transformer* transformer) {
 }
 
 // Backward pass
-void backward_pass_transformer(Transformer* transformer, float* d_X) {
-    const float alpha = 1.0f;
-    int total_seq = transformer->batch_size * transformer->seq_len;
-    
-    // Backward pass through layers in reverse order
+void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X) {
+    // Process layers in reverse order
     for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
-        Attention* current_attn = transformer->attention_layers[layer];
-        MLP* current_mlp = transformer->mlp_layers[layer];
-        
-        // Determine the layer input that was used in forward pass
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
+        float* layer_grad_input = (layer == 0) ? d_grad_X : transformer->mlp_layers[layer-1]->d_grad_output;
         
-        // Step 1: Backward pass through current MLP
-        // This computes gradient w.r.t. MLP input and stores it in current_attn->d_grad_output
-        backward_pass_mlp(current_mlp, current_attn->d_output, current_attn->d_grad_output);
+        // Step 1: Backward through MLP
+        backward_pass_mlp(transformer->mlp_layers[layer], 
+                         transformer->attention_layers[layer]->d_output, 
+                         transformer->attention_layers[layer]->d_grad_output);
         
-        // Step 2: Add gradient from residual connection (mlp_output += attention_output)
-        CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                transformer->d_model, total_seq,
-                                &alpha, current_attn->d_grad_output, transformer->d_model,
-                                &alpha, current_mlp->d_grad_output, transformer->d_model,
-                                current_attn->d_grad_output, transformer->d_model));
+        // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
+        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+            transformer->attention_layers[layer]->d_grad_output, 
+            transformer->mlp_layers[layer]->d_grad_output, 
+            transformer->batch_size * transformer->seq_len * transformer->d_model
+        );
         
-        // Step 3: Backward pass through current attention
-        if (layer > 0) {
-            // Pass the previous layer's MLP error buffer to store the gradient
-            MLP* prev_mlp = transformer->mlp_layers[layer-1];
-            backward_pass_attention(current_attn, layer_input, prev_mlp->d_grad_output);
-            
-            // Step 4: Add gradient from attention residual connection (attention_output += input)
-            CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
-                                    CUBLAS_OP_N, CUBLAS_OP_N,
-                                    transformer->d_model, total_seq,
-                                    &alpha, prev_mlp->d_grad_output, transformer->d_model,
-                                    &alpha, current_attn->d_grad_output, transformer->d_model,
-                                    prev_mlp->d_grad_output, transformer->d_model));
-        } else {
-            // For the first layer, we don't need to propagate gradients further back
-            backward_pass_attention(current_attn, layer_input, NULL);
+        // Step 3: Backward through attention
+        backward_pass_attention(transformer->attention_layers[layer], layer_input, layer_grad_input);
+        
+        // Step 4: Add gradient from first residual connection (attention_output += input)
+        if (layer_grad_input != NULL) {
+            residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+                layer_grad_input, 
+                transformer->attention_layers[layer]->d_grad_output, 
+                transformer->batch_size * transformer->seq_len * transformer->d_model
+            );
         }
     }
 }
 
-// Update weights
+// Update weights for all components
 void update_weights_transformer(Transformer* transformer, float learning_rate) {
     for (int i = 0; i < transformer->num_layers; i++) {
         update_weights_attention(transformer->attention_layers[i], learning_rate);
@@ -157,101 +130,79 @@ void update_weights_transformer(Transformer* transformer, float learning_rate) {
     }
 }
 
-// Save transformer to binary files
+// Save transformer to binary file
 void save_transformer(Transformer* transformer, const char* filename) {
-    // Extract base filename without extension
-    char base[256];
-    strncpy(base, filename, sizeof(base) - 1);
-    base[sizeof(base) - 1] = '\0';
-    
-    // Remove .bin extension if present
-    char* dot = strrchr(base, '.');
-    if (dot && strcmp(dot, ".bin") == 0) {
-        *dot = '\0';
-    }
-    
-    // Save all layers
-    for (int i = 0; i < transformer->num_layers; i++) {
-        // Save attention module
-        char attn_filename[300];
-        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base, i);
-        save_attention(transformer->attention_layers[i], attn_filename);
-        
-        // Save MLP module
-        char mlp_filename[300];
-        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base, i);
-        save_mlp(transformer->mlp_layers[i], mlp_filename);
-    }
-    
-    // Save transformer metadata
     FILE* file = fopen(filename, "wb");
     if (!file) {
         printf("Error opening file for writing: %s\n", filename);
         return;
     }
     
-    fwrite(&transformer->d_model, sizeof(int), 1, file);
+    // Save dimensions
     fwrite(&transformer->seq_len, sizeof(int), 1, file);
+    fwrite(&transformer->d_model, sizeof(int), 1, file);
     fwrite(&transformer->batch_size, sizeof(int), 1, file);
-    fwrite(&transformer->mlp_hidden, sizeof(int), 1, file);
+    fwrite(&transformer->hidden_dim, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
-    fwrite(&transformer->is_causal, sizeof(bool), 1, file);
+    
+    // Save attention is_causal flag
+    fwrite(&transformer->attention_layers[0]->is_causal, sizeof(bool), 1, file);
     
     fclose(file);
+    
+    // Save all layer components
+    for (int i = 0; i < transformer->num_layers; i++) {
+        char attn_filename[256], mlp_filename[256];
+        
+        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", filename, i);
+        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", filename, i);
+        
+        save_attention(transformer->attention_layers[i], attn_filename);
+        save_mlp(transformer->mlp_layers[i], mlp_filename);
+    }
+
     printf("Model saved to %s\n", filename);
 }
 
-// Load transformer from binary files
+// Load transformer from binary file
 Transformer* load_transformer(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
-    // Load transformer metadata
     FILE* file = fopen(filename, "rb");
     if (!file) {
         printf("Error opening file for reading: %s\n", filename);
         return NULL;
     }
     
-    int d_model, seq_len, stored_batch_size, mlp_hidden, num_layers;
+    // Read dimensions
+    int seq_len, d_model, stored_batch_size, hidden_dim, num_layers;
     bool is_causal;
-    fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
+    fread(&d_model, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
-    fread(&mlp_hidden, sizeof(int), 1, file);
+    fread(&hidden_dim, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     
     fclose(file);
     
-    // Use custom_batch_size if provided
+    // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    // Extract base filename without extension
-    char base[256];
-    strncpy(base, filename, sizeof(base) - 1);
-    base[sizeof(base) - 1] = '\0';
+    // Initialize transformer first
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, cublas_handle, cublaslt_handle);
     
-    // Remove .bin extension if present
-    char* dot = strrchr(base, '.');
-    if (dot && strcmp(dot, ".bin") == 0) {
-        *dot = '\0';
-    }
-    
-    // Create transformer structure
-    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, is_causal, cublas_handle, cublaslt_handle);
-    
-    // Load all layers
+    // Load all layer components
     for (int i = 0; i < num_layers; i++) {
-        // Free the initialized layers first
+        char attn_filename[256], mlp_filename[256];
+        
+        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", filename, i);
+        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", filename, i);
+        
+        // Free the initialized components
         free_attention(transformer->attention_layers[i]);
         free_mlp(transformer->mlp_layers[i]);
         
-        // Load attention module
-        char attn_filename[300];
-        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base, i);
+        // Load the saved components
         transformer->attention_layers[i] = load_attention(attn_filename, batch_size, cublas_handle, cublaslt_handle);
-
-        // Load MLP module
-        char mlp_filename[300];
-        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base, i);
         transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle, cublaslt_handle);
     }
     

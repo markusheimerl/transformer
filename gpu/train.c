@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "../attention/data.h"
+#include "../data.h"
 #include "transformer.h"
 
 int main() {
@@ -18,21 +18,21 @@ int main() {
     // Parameters
     const int seq_len = 128;
     const int d_model = 64;
+    const int hidden_dim = 256;
     const int num_samples = 1024;
     const int batch_size = 32;
-    const int mlp_hidden = 128;
-    const int num_layers = 2;
+    const int num_layers = 3;
     
     // Generate synthetic data
     float *X, *y;
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize transformer
-    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle, cublaslt_handle);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, false, cublas_handle, cublaslt_handle);
     
     // Training parameters
     const int num_epochs = 50;
-    const float learning_rate = 0.001f;
+    const float learning_rate = 0.0003f;
     const int num_batches = num_samples / batch_size;
     
     // Allocate device memory for batch data
@@ -64,7 +64,7 @@ int main() {
 
             // Backward pass
             zero_gradients_transformer(transformer);
-            backward_pass_transformer(transformer, d_X);
+            backward_pass_transformer(transformer, d_X, NULL);
             
             // Update weights
             update_weights_transformer(transformer, learning_rate);
@@ -100,8 +100,7 @@ int main() {
     
     // Copy predictions back to host
     float* output = (float*)malloc(batch_size * seq_len * d_model * sizeof(float));
-    MLP* final_mlp = loaded_transformer->mlp_layers[loaded_transformer->num_layers-1];
-    CHECK_CUDA(cudaMemcpy(output, final_mlp->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(output, loaded_transformer->mlp_layers[loaded_transformer->num_layers - 1]->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
