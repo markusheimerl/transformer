@@ -38,7 +38,7 @@ $$
 \frac{\partial L}{\partial \tilde{Z}_2} &= \frac{\partial L}{\partial Y} \\
 \frac{\partial L}{\partial H_2} &= \frac{\partial L}{\partial S_2'} \odot [\sigma(H_2) + H_2 \odot \sigma(H_2) \odot (1-\sigma(H_2))] \\
 \frac{\partial L}{\partial W_{1,2}} &= {\tilde{Z}_2}^T(\frac{\partial L}{\partial H_2}) \\
-\frac{\partial L}{\partial \tilde{Z}_2} &\mathrel{+}= (\frac{\partial L}{\partial H_2})W_{1,2}^T \\
+\frac{\partial L}{\partial \tilde{Z}_2} &+= (\frac{\partial L}{\partial H_2})W_{1,2}^T \\
 \frac{\partial L}{\partial W_{o,2}} &= Z_2^T(\frac{\partial L}{\partial \tilde{Z}_2}) \\
 \frac{\partial L}{\partial Z_2} &= (\frac{\partial L}{\partial \tilde{Z}_2})W_{o,2}^T \\
 \frac{\partial L}{\partial X_1} &= \frac{\partial L}{\partial \tilde{Z}_2} \\
@@ -50,13 +50,13 @@ $$
 \frac{\partial L}{\partial W_{q,2}} &= X_1^T(\frac{\partial L}{\partial Q_2}) \\
 \frac{\partial L}{\partial W_{k,2}} &= X_1^T(\frac{\partial L}{\partial K_2}) \\
 \frac{\partial L}{\partial W_{v,2}} &= X_1^T(\frac{\partial L}{\partial V_2}) \\
-\frac{\partial L}{\partial X_1} &\mathrel{+}= (\frac{\partial L}{\partial Q_2})W_{q,2}^T + (\frac{\partial L}{\partial K_2})W_{k,2}^T + (\frac{\partial L}{\partial V_2})W_{v,2}^T \\
+\frac{\partial L}{\partial X_1} &+= (\frac{\partial L}{\partial Q_2})W_{q,2}^T + (\frac{\partial L}{\partial K_2})W_{k,2}^T + (\frac{\partial L}{\partial V_2})W_{v,2}^T \\
 \frac{\partial L}{\partial W_{2,1}} &= {S_1'}^T(\frac{\partial L}{\partial X_1}) \\
 \frac{\partial L}{\partial S_1'} &= (\frac{\partial L}{\partial X_1})W_{2,1}^T \\
 \frac{\partial L}{\partial \tilde{Z}_1} &= \frac{\partial L}{\partial X_1} \\
 \frac{\partial L}{\partial H_1} &= \frac{\partial L}{\partial S_1'} \odot [\sigma(H_1) + H_1 \odot \sigma(H_1) \odot (1-\sigma(H_1))] \\
 \frac{\partial L}{\partial W_{1,1}} &= {\tilde{Z}_1}^T(\frac{\partial L}{\partial H_1}) \\
-\frac{\partial L}{\partial \tilde{Z}_1} &\mathrel{+}= (\frac{\partial L}{\partial H_1})W_{1,1}^T \\
+\frac{\partial L}{\partial \tilde{Z}_1} &+= (\frac{\partial L}{\partial H_1})W_{1,1}^T \\
 \frac{\partial L}{\partial W_{o,1}} &= Z_1^T(\frac{\partial L}{\partial \tilde{Z}_1}) \\
 \frac{\partial L}{\partial Z_1} &= (\frac{\partial L}{\partial \tilde{Z}_1})W_{o,1}^T \\
 \frac{\partial L}{\partial X} &= \frac{\partial L}{\partial \tilde{Z}_1} \\
@@ -68,7 +68,7 @@ $$
 \frac{\partial L}{\partial W_{q,1}} &= X^T(\frac{\partial L}{\partial Q_1}) \\
 \frac{\partial L}{\partial W_{k,1}} &= X^T(\frac{\partial L}{\partial K_1}) \\
 \frac{\partial L}{\partial W_{v,1}} &= X^T(\frac{\partial L}{\partial V_1}) \\
-\frac{\partial L}{\partial X} &\mathrel{+}= (\frac{\partial L}{\partial Q_1})W_{q,1}^T + (\frac{\partial L}{\partial K_1})W_{k,1}^T + (\frac{\partial L}{\partial V_1})W_{v,1}^T
+\frac{\partial L}{\partial X} &+= (\frac{\partial L}{\partial Q_1})W_{q,1}^T + (\frac{\partial L}{\partial K_1})W_{k,1}^T + (\frac{\partial L}{\partial V_1})W_{v,1}^T
 \end{align*}
 $$
 
