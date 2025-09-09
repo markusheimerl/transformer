@@ -1,16 +1,15 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
+Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
-    // Store dimensions and handles
+    // Store dimensions and handle
     transformer->seq_len = seq_len;
     transformer->d_model = d_model;
     transformer->batch_size = batch_size;
     transformer->hidden_dim = hidden_dim;
     transformer->num_layers = num_layers;
-    transformer->cublas_handle = cublas_handle;
     transformer->cublaslt_handle = cublaslt_handle;
     
     // Allocate arrays for layer components
@@ -19,8 +18,8 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
-        transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, cublas_handle, cublaslt_handle);
-        transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len, cublas_handle, cublaslt_handle);
+        transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
+        transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len, cublaslt_handle);
     }
     
     return transformer;
@@ -165,7 +164,7 @@ void save_transformer(Transformer* transformer, const char* filename) {
 }
 
 // Load transformer from binary file
-Transformer* load_transformer(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
+Transformer* load_transformer(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
         printf("Error opening file for reading: %s\n", filename);
@@ -188,7 +187,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize transformer first
-    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, cublas_handle, cublaslt_handle);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, cublaslt_handle);
     
     // Load all layer components
     for (int i = 0; i < num_layers; i++) {
@@ -202,8 +201,8 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         free_mlp(transformer->mlp_layers[i]);
         
         // Load the saved components
-        transformer->attention_layers[i] = load_attention(attn_filename, batch_size, cublas_handle, cublaslt_handle);
-        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle, cublaslt_handle);
+        transformer->attention_layers[i] = load_attention(attn_filename, batch_size, cublaslt_handle);
+        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublaslt_handle);
     }
     
     printf("Model loaded from %s\n", filename);
