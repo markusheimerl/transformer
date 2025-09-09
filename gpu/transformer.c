@@ -1,7 +1,7 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle) {
+Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
     // Store dimensions
@@ -10,7 +10,9 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     transformer->batch_size = batch_size;
     transformer->mlp_hidden = mlp_hidden;
     transformer->num_layers = num_layers;
+    transformer->is_causal = is_causal;
     transformer->cublas_handle = cublas_handle;
+    transformer->cublaslt_handle = cublaslt_handle;
     
     // Allocate arrays for layers
     transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
@@ -18,8 +20,8 @@ Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
-        transformer->attention_layers[i] = init_attention(d_model, seq_len, batch_size, is_causal, cublas_handle);
-        transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size * seq_len, cublas_handle);
+        transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, cublas_handle, cublaslt_handle);
+        transformer->mlp_layers[i] = init_mlp(d_model, mlp_hidden, d_model, batch_size * seq_len, cublas_handle, cublaslt_handle);
     }
     
     return transformer;
@@ -56,19 +58,19 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
-                                &alpha, current_attn->d_layer_output, transformer->d_model,
+                                &alpha, current_attn->d_output, transformer->d_model,
                                 &alpha, layer_input, transformer->d_model,
-                                current_attn->d_layer_output, transformer->d_model));
+                                current_attn->d_output, transformer->d_model));
         
         // Step 3: MLP layer
-        forward_pass_mlp(current_mlp, current_attn->d_layer_output);
+        forward_pass_mlp(current_mlp, current_attn->d_output);
         
         // Step 4: Second residual connection - mlp_output += attention_output
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
                                 &alpha, current_mlp->d_layer_output, transformer->d_model,
-                                &alpha, current_attn->d_layer_output, transformer->d_model,
+                                &alpha, current_attn->d_output, transformer->d_model,
                                 current_mlp->d_layer_output, transformer->d_model));
     }
 }
@@ -116,16 +118,16 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
         
         // Step 1: Backward pass through current MLP
-        // This computes gradient w.r.t. MLP input and stores it in current_attn->d_error_output
-        backward_pass_mlp(current_mlp, current_attn->d_layer_output, current_attn->d_error_output);
+        // This computes gradient w.r.t. MLP input and stores it in current_attn->d_grad_output
+        backward_pass_mlp(current_mlp, current_attn->d_output, current_attn->d_grad_output);
         
         // Step 2: Add gradient from residual connection (mlp_output += attention_output)
         CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
-                                &alpha, current_attn->d_error_output, transformer->d_model,
+                                &alpha, current_attn->d_grad_output, transformer->d_model,
                                 &alpha, current_mlp->d_error_output, transformer->d_model,
-                                current_attn->d_error_output, transformer->d_model));
+                                current_attn->d_grad_output, transformer->d_model));
         
         // Step 3: Backward pass through current attention
         if (layer > 0) {
@@ -138,7 +140,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                                     CUBLAS_OP_N, CUBLAS_OP_N,
                                     transformer->d_model, total_seq,
                                     &alpha, prev_mlp->d_error_output, transformer->d_model,
-                                    &alpha, current_attn->d_error_output, transformer->d_model,
+                                    &alpha, current_attn->d_grad_output, transformer->d_model,
                                     prev_mlp->d_error_output, transformer->d_model));
         } else {
             // For the first layer, we don't need to propagate gradients further back
@@ -193,13 +195,14 @@ void save_transformer(Transformer* transformer, const char* filename) {
     fwrite(&transformer->batch_size, sizeof(int), 1, file);
     fwrite(&transformer->mlp_hidden, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
+    fwrite(&transformer->is_causal, sizeof(bool), 1, file);
     
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
 
 // Load transformer from binary files
-Transformer* load_transformer(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle) {
+Transformer* load_transformer(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
     // Load transformer metadata
     FILE* file = fopen(filename, "rb");
     if (!file) {
@@ -208,11 +211,13 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     }
     
     int d_model, seq_len, stored_batch_size, mlp_hidden, num_layers;
+    bool is_causal;
     fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&mlp_hidden, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
+    fread(&is_causal, sizeof(bool), 1, file);
     
     fclose(file);
     
@@ -231,7 +236,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     }
     
     // Create transformer structure
-    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle);
+    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, is_causal, cublas_handle, cublaslt_handle);
     
     // Load all layers
     for (int i = 0; i < num_layers; i++) {
@@ -242,12 +247,12 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
         // Load attention module
         char attn_filename[300];
         snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base, i);
-        transformer->attention_layers[i] = load_attention(attn_filename, batch_size, cublas_handle);
+        transformer->attention_layers[i] = load_attention(attn_filename, batch_size, cublas_handle, cublaslt_handle);
 
         // Load MLP module
         char mlp_filename[300];
         snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base, i);
-        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle);
+        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle, cublaslt_handle);
     }
     
     printf("Model loaded from %s\n", filename);

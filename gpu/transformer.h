@@ -5,7 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdbool.h>
 #include <cublas_v2.h>
+#include <cublasLt.h>
 #include <cuda_runtime.h>
 #include "../attention/gpu/attention.h"
 #include "../mlp/gpu/mlp.h"
@@ -34,13 +36,26 @@
 } while(0)
 #endif
 
+// cuBLASLt Error checking macro
+#ifndef CHECK_CUBLASLT
+#define CHECK_CUBLASLT(call) do { \
+    cublasStatus_t status = call; \
+    if (status != CUBLAS_STATUS_SUCCESS) { \
+        fprintf(stderr, "cuBLASLt error in %s:%d: %d\n", __FILE__, __LINE__, \
+                (int)status); \
+        exit(EXIT_FAILURE); \
+    } \
+} while(0)
+#endif
+
 typedef struct {
     // Component modules
     Attention** attention_layers;
     MLP** mlp_layers;
     
-    // cuBLAS handle
+    // cuBLAS and cuBLASLt handles
     cublasHandle_t cublas_handle;
+    cublasLtHandle_t cublaslt_handle;
     
     // Dimensions
     int d_model;      // Model dimension (feature_dim)
@@ -48,10 +63,11 @@ typedef struct {
     int batch_size;   // Batch size
     int mlp_hidden;   // MLP hidden dimension
     int num_layers;   // Number of transformer layers
+    bool is_causal;   // Whether to use causal attention
 } Transformer;
 
 // Function prototypes
-Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle);
+Transformer* init_transformer(int d_model, int seq_len, int batch_size, int mlp_hidden, int num_layers, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
 void free_transformer(Transformer* transformer);
 void forward_pass_transformer(Transformer* transformer, float* d_X);
 float calculate_loss_transformer(Transformer* transformer, float* d_y);
@@ -59,6 +75,6 @@ void zero_gradients_transformer(Transformer* transformer);
 void backward_pass_transformer(Transformer* transformer, float* d_X);
 void update_weights_transformer(Transformer* transformer, float learning_rate);
 void save_transformer(Transformer* transformer, const char* filename);
-Transformer* load_transformer(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle);
+Transformer* load_transformer(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
 
 #endif

@@ -5,273 +5,161 @@
 #include "../attention/data.h"
 #include "transformer.h"
 
-void train_model(Transformer* transformer, float* X, float* y, int num_samples, int batch_size, int num_epochs, float learning_rate) {
-    const int num_batches = (num_samples + batch_size - 1) / batch_size;
-    
-    // Allocate device memory for input and output
-    int seq_size = batch_size * transformer->seq_len * transformer->d_model;
-    float *d_X, *d_y;
-    CHECK_CUDA(cudaMalloc(&d_X, seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_y, seq_size * sizeof(float)));
-    
-    printf("Starting training...\n");
-    printf("Architecture: %d layers, d_model=%d, seq_len=%d, mlp_hidden=%d, batch_size=%d, num_samples=%d, num_batches=%d\n\n", 
-           transformer->num_layers, transformer->d_model, transformer->seq_len, transformer->mlp_hidden, batch_size, num_samples, num_batches);
-    
-    for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
-        float total_loss = 0.0f;
-        
-        for (int batch = 0; batch < num_batches; batch++) {
-            int start_idx = batch * batch_size;
-            int end_idx = (start_idx + batch_size > num_samples) ? num_samples : start_idx + batch_size;
-            if (end_idx - start_idx < batch_size) continue;
-            
-            float* X_batch = X + start_idx * transformer->seq_len * transformer->d_model;
-            float* y_batch = y + start_idx * transformer->seq_len * transformer->d_model;
-            
-            // Copy batch data to device
-            CHECK_CUDA(cudaMemcpy(d_X, X_batch, seq_size * sizeof(float), cudaMemcpyHostToDevice));
-            CHECK_CUDA(cudaMemcpy(d_y, y_batch, seq_size * sizeof(float), cudaMemcpyHostToDevice));
-            
-            forward_pass_transformer(transformer, d_X);
-            total_loss += calculate_loss_transformer(transformer, d_y);
-
-            if (epoch < num_epochs) {
-                zero_gradients_transformer(transformer);
-                backward_pass_transformer(transformer, d_X);
-                update_weights_transformer(transformer, learning_rate);
-            }
-        }
-
-        if (epoch % 2 == 0) {
-            printf("Epoch [%d/%d], Average Loss: %.8f\n", epoch, num_epochs, total_loss / num_batches);
-        }
-    }
-    
-    CHECK_CUDA(cudaFree(d_X));
-    CHECK_CUDA(cudaFree(d_y));
-}
-
-void evaluate_model(Transformer* transformer, float* X_eval, int eval_samples, int seq_len, int feature_dim, int batch_size) {
-    const int eval_batches = (eval_samples + batch_size - 1) / batch_size;
-    int correct_predictions = 0, total_predictions = 0;
-    
-    // Allocate device memory
-    int seq_size = batch_size * seq_len * feature_dim;
-    float *d_X;
-    CHECK_CUDA(cudaMalloc(&d_X, seq_size * sizeof(float)));
-    
-    // Allocate host memory for predictions
-    float* predictions = (float*)malloc(seq_size * sizeof(float));
-    
-    for (int batch = 0; batch < eval_batches; batch++) {
-        int start_idx = batch * batch_size;
-        int end_idx = (start_idx + batch_size > eval_samples) ? eval_samples : start_idx + batch_size;
-        if (end_idx - start_idx < batch_size) continue;
-        
-        float* X_batch = X_eval + start_idx * seq_len * feature_dim;
-        
-        // Copy batch data to device and run forward pass
-        CHECK_CUDA(cudaMemcpy(d_X, X_batch, seq_size * sizeof(float), cudaMemcpyHostToDevice));
-        forward_pass_transformer(transformer, d_X);
-        
-        // Copy predictions back to host
-        MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
-        CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, seq_size * sizeof(float), cudaMemcpyDeviceToHost));
-        
-        // Evaluate predictions for this batch
-        for (int sample = 0; sample < batch_size; sample++) {
-            int global_sample = start_idx + sample;
-            
-            // Find expected max row
-            int expected_max_row = 0;
-            float max_val = X_eval[global_sample * seq_len * feature_dim + 0];
-            for (int seq = 1; seq < seq_len; seq++) {
-                float val = X_eval[global_sample * seq_len * feature_dim + seq * feature_dim + 0];
-                if (val > max_val) {
-                    max_val = val;
-                    expected_max_row = seq;
-                }
-            }
-            
-            // Check prediction accuracy
-            int sample_correct = 1;
-            float tolerance = 0.5f;
-            
-            for (int seq = 0; seq < seq_len && sample_correct; seq++) {
-                for (int feat = 0; feat < feature_dim && sample_correct; feat++) {
-                    float predicted = predictions[sample * seq_len * feature_dim + seq * feature_dim + feat];
-                    float expected = X_eval[global_sample * seq_len * feature_dim + expected_max_row * feature_dim + feat];
-                    
-                    if (fabsf(predicted - expected) > tolerance) {
-                        sample_correct = 0;
-                    }
-                }
-            }
-            
-            if (sample_correct) correct_predictions++;
-            total_predictions++;
-        }
-    }
-    
-    printf("Transformer Task Accuracy on NEW data: %d/%d (%.1f%%)\n", 
-           correct_predictions, total_predictions, 
-           (100.0f * correct_predictions) / total_predictions);
-    
-    free(predictions);
-    CHECK_CUDA(cudaFree(d_X));
-}
-
-void print_evaluation_samples(Transformer* transformer, float* X_eval, float* y_eval, int seq_len, int feature_dim, int batch_size) {
-    printf("\nSample Predictions from NEW evaluation data (first 5 samples):\n");
-    printf("=============================================================\n");
-
-    // Allocate device memory
-    int seq_size = batch_size * seq_len * feature_dim;
-    float *d_X;
-    CHECK_CUDA(cudaMalloc(&d_X, seq_size * sizeof(float)));
-    
-    // Allocate host memory for predictions
-    float* predictions = (float*)malloc(seq_size * sizeof(float));
-    
-    // Copy first batch to device and run forward pass
-    CHECK_CUDA(cudaMemcpy(d_X, X_eval, seq_size * sizeof(float), cudaMemcpyHostToDevice));
-    forward_pass_transformer(transformer, d_X);
-    
-    // Copy predictions back to host
-    MLP* final_mlp = transformer->mlp_layers[transformer->num_layers-1];
-    CHECK_CUDA(cudaMemcpy(predictions, final_mlp->d_layer_output, 
-                         seq_size * sizeof(float), cudaMemcpyDeviceToHost));
-    
-    // Print sample predictions
-    for (int sample = 0; sample < 5; sample++) {
-        printf("\nSample %d:\n", sample);
-        printf("Input:\n");
-        
-        // Print input
-        for (int seq = 0; seq < seq_len; seq++) {
-            printf("  [");
-            for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", X_eval[sample * seq_len * feature_dim + seq * feature_dim + feat]);
-                if (feat < feature_dim - 1) printf(", ");
-            }
-            printf("]\n");
-        }
-        
-        // Find expected max row
-        int expected_max_row = 0;
-        float max_val = X_eval[sample * seq_len * feature_dim + 0];
-        for (int seq = 1; seq < seq_len; seq++) {
-            float val = X_eval[sample * seq_len * feature_dim + seq * feature_dim + 0];
-            if (val > max_val) {
-                max_val = val;
-                expected_max_row = seq;
-            }
-        }
-        
-        printf("Expected max row: %d (value: %.2f)\n", expected_max_row, max_val);
-        printf("Model Output:\n");
-        
-        // Print model output
-        for (int seq = 0; seq < seq_len; seq++) {
-            printf("  [");
-            for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", predictions[sample * seq_len * feature_dim + seq * feature_dim + feat]);
-                if (feat < feature_dim - 1) printf(", ");
-            }
-            printf("]\n");
-        }
-        
-        printf("Target Output:\n");
-        
-        // Print target output
-        for (int seq = 0; seq < seq_len; seq++) {
-            printf("  [");
-            for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", y_eval[sample * seq_len * feature_dim + seq * feature_dim + feat]);
-                if (feat < feature_dim - 1) printf(", ");
-            }
-            printf("]\n");
-        }
-    }
-    
-    // Calculate and print MSE per feature
-    printf("\nMSE per feature (first evaluation batch):\n");
-    for (int feat = 0; feat < feature_dim; feat++) {
-        float mse = 0.0f;
-        for (int sample = 0; sample < batch_size; sample++) {
-            for (int seq = 0; seq < seq_len; seq++) {
-                float pred = predictions[sample * seq_len * feature_dim + seq * feature_dim + feat];
-                float actual = y_eval[sample * seq_len * feature_dim + seq * feature_dim + feat];
-                float diff = pred - actual;
-                mse += diff * diff;
-            }
-        }
-        mse /= (batch_size * seq_len);
-        printf("Feature %d MSE: %.6f\n", feat, mse);
-    }
-    
-    free(predictions);
-    CHECK_CUDA(cudaFree(d_X));
-}
-
 int main() {
     srand(time(NULL));
 
-    // Initialize cuBLAS
+    // Initialize cuBLAS and cuBLASLt
     cublasHandle_t cublas_handle;
+    cublasLtHandle_t cublaslt_handle;
     CHECK_CUBLAS(cublasCreate(&cublas_handle));
     CHECK_CUBLAS(cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH));
+    CHECK_CUBLASLT(cublasLtCreate(&cublaslt_handle));
 
-    const int seq_len = 16, feature_dim = 8, num_layers = 2, num_samples = 65536, batch_size = 512, mlp_hidden = 128;
+    // Parameters
+    const int seq_len = 128;
+    const int d_model = 64;
+    const int num_samples = 1024;
+    const int batch_size = 32;
+    const int mlp_hidden = 128;
+    const int num_layers = 2;
     
-    // Generate training data
+    // Generate synthetic data
     float *X, *y;
-    generate_data(&X, &y, num_samples, seq_len, feature_dim);
+    generate_attention_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
-    // Initialize and train transformer
-    Transformer* transformer = init_transformer(feature_dim, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle);
-    train_model(transformer, X, y, num_samples, batch_size, 50, 0.001f);
+    // Initialize transformer
+    Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle, cublaslt_handle);
+    
+    // Training parameters
+    const int num_epochs = 50;
+    const float learning_rate = 0.001f;
+    const int num_batches = num_samples / batch_size;
+    
+    // Allocate device memory for batch data
+    float *d_X, *d_y;
+    CHECK_CUDA(cudaMalloc(&d_X, batch_size * seq_len * d_model * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_y, batch_size * seq_len * d_model * sizeof(float)));
+    
+    // Training loop
+    for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
+        float epoch_loss = 0.0f;
+        
+        for (int batch = 0; batch < num_batches; batch++) {
+            // Calculate batch offset
+            int batch_offset = batch * batch_size * seq_len * d_model;
 
-    // Get timestamp and save model
+            // Copy batch data to device
+            CHECK_CUDA(cudaMemcpy(d_X, &X[batch_offset], batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_y, &y[batch_offset], batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+            
+            // Forward pass
+            forward_pass_transformer(transformer, d_X);
+            
+            // Calculate loss
+            float loss = calculate_loss_transformer(transformer, d_y);
+            epoch_loss += loss;
+
+            // Don't update weights after final evaluation
+            if (epoch == num_epochs) continue;
+
+            // Backward pass
+            zero_gradients_transformer(transformer);
+            backward_pass_transformer(transformer, d_X);
+            
+            // Update weights
+            update_weights_transformer(transformer, learning_rate);
+        }
+        
+        epoch_loss /= num_batches;
+
+        // Print progress
+        if (epoch % 10 == 0) {
+            printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, epoch_loss);
+        }
+    }
+
+    // Get timestamp for filenames
     char model_fname[64], data_fname[64];
     time_t now = time(NULL);
-    strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_model.bin", localtime(&now));
-    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", localtime(&now));
+    strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_transformer.bin", localtime(&now));
+    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_transformer_data.csv", localtime(&now));
 
+    // Save model and data with timestamped filenames
     save_transformer(transformer, model_fname);
-    save_data(X, y, num_samples, seq_len, feature_dim, data_fname);
+    save_data(X, y, seq_len, num_samples, d_model, data_fname);
     
-    // Verify saved model
+    // Load the model back and verify
     printf("\nVerifying saved model...\n");
-    Transformer* loaded_transformer = load_transformer(model_fname, batch_size, cublas_handle);
-    
-    // Allocate device memory for verification
-    int seq_size = batch_size * seq_len * feature_dim;
-    float *d_X, *d_y;
-    CHECK_CUDA(cudaMalloc(&d_X, seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_y, seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_X, X, seq_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_y, y, seq_size * sizeof(float), cudaMemcpyHostToDevice));
-    
-    forward_pass_transformer(loaded_transformer, d_X);
-    printf("Loss with loaded model (sample batch): %.8f\n", calculate_loss_transformer(loaded_transformer, d_y));
 
-    // Generate and evaluate on new data
-    printf("\nGenerating new evaluation dataset...\n");
-    const int eval_samples = 2048;
-    float *X_eval, *y_eval;
-    generate_data(&X_eval, &y_eval, eval_samples, seq_len, feature_dim);
+    // Load the model back with original batch_size
+    Transformer* loaded_transformer = load_transformer(model_fname, batch_size, cublas_handle, cublaslt_handle);
+
+    // Forward pass with loaded model on first batch
+    CHECK_CUDA(cudaMemcpy(d_X, X, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+    forward_pass_transformer(loaded_transformer, d_X);
     
-    printf("\nEvaluating model performance on NEW data...\n");
-    evaluate_model(loaded_transformer, X_eval, eval_samples, seq_len, feature_dim, batch_size);
-    print_evaluation_samples(loaded_transformer, X_eval, y_eval, seq_len, feature_dim, batch_size);
+    // Copy predictions back to host
+    float* output = (float*)malloc(batch_size * seq_len * d_model * sizeof(float));
+    MLP* final_mlp = loaded_transformer->mlp_layers[loaded_transformer->num_layers-1];
+    CHECK_CUDA(cudaMemcpy(output, final_mlp->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Evaluate model performance on first batch
+    printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
+    printf("-------\t--------\t--------\t--------------------------------\n");
+
+    for (int d = 0; d < d_model; d++) {
+        // Calculate mean for R² across all positions and batches for this feature
+        float y_mean = 0.0f;
+        int total_elements = batch_size * seq_len;
+        
+        for (int b = 0; b < batch_size; b++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                y_mean += y[idx];
+            }
+        }
+        y_mean /= total_elements;
+        
+        // Calculate R² and MAE for this feature
+        float ss_res = 0.0f, ss_tot = 0.0f, mae = 0.0f;
+        for (int b = 0; b < batch_size; b++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                float pred = output[idx];
+                float actual = y[idx];
+                float diff = pred - actual;
+                
+                ss_res += diff * diff;
+                ss_tot += (actual - y_mean) * (actual - y_mean);
+                mae += fabs(diff);
+            }
+        }
+        
+        float r2 = 1.0f - (ss_res / ss_tot);
+        mae /= total_elements;
+        
+        // Print summary with sample predictions from first batch, first few positions
+        printf("d%d\t%.6f\t%.3f\t\t", d, r2, mae);
+        for (int sample = 0; sample < 3; sample++) {
+            // Show predictions from batch 0, positions 0, 1, 2
+            int idx = 0 * seq_len * d_model + sample * d_model + d;
+            float pred = output[idx];
+            float actual = y[idx];
+            printf("%.2f/%.2f ", pred, actual);
+        }
+        printf("\n");
+    }
     
     // Cleanup
-    free(X); free(y); free(X_eval); free(y_eval);
-    CHECK_CUDA(cudaFree(d_X)); CHECK_CUDA(cudaFree(d_y));
-    free_transformer(transformer); free_transformer(loaded_transformer);
+    free(X);
+    free(y);
+    free(output);
+    CHECK_CUDA(cudaFree(d_X));
+    CHECK_CUDA(cudaFree(d_y));
+    free_transformer(transformer);
+    free_transformer(loaded_transformer);
     CHECK_CUBLAS(cublasDestroy(cublas_handle));
+    CHECK_CUBLASLT(cublasLtDestroy(cublaslt_handle));
     
     return 0;
 }
