@@ -25,7 +25,7 @@ int main() {
     
     // Generate synthetic data
     float *X, *y;
-    generate_attention_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
+    generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize transformer
     Transformer* transformer = init_transformer(d_model, seq_len, batch_size, mlp_hidden, num_layers, false, cublas_handle, cublaslt_handle);
