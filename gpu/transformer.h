@@ -13,9 +13,13 @@
 #include "../mlp/gpu/mlp.h"
 
 typedef struct {
-    // Component layers
-    Attention* attention;
-    MLP* mlp;
+    // Layer 1 components
+    Attention* attention1;
+    MLP* mlp1;
+    
+    // Layer 2 components  
+    Attention* attention2;
+    MLP* mlp2;
     
     // cuBLAS handles
     cublasHandle_t cublas_handle;
