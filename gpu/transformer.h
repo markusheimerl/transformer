@@ -13,17 +13,8 @@
 #include "../mlp/gpu/mlp.h"
 
 typedef struct {
-    // Layer 1 components
-    Attention* attention1;
-    MLP* mlp1;
-    
-    // Layer 2 components  
-    Attention* attention2;
-    MLP* mlp2;
-    
-    // Layer 3 components
-    Attention* attention3;
-    MLP* mlp3;
+    Attention** attention_layers;
+    MLP** mlp_layers;
     
     // cuBLAS handles
     cublasHandle_t cublas_handle;
@@ -34,10 +25,11 @@ typedef struct {
     int d_model;
     int batch_size;
     int hidden_dim;
+    int num_layers;
 } Transformer;
 
 // Function prototypes
-Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
+Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
 void free_transformer(Transformer* transformer);
 void forward_pass_transformer(Transformer* transformer, float* d_X);
 float calculate_loss_transformer(Transformer* transformer, float* d_y);

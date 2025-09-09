@@ -21,13 +21,14 @@ int main() {
     const int hidden_dim = 256;
     const int num_samples = 1024;
     const int batch_size = 32;
+    const int num_layers = 3;
     
     // Generate synthetic data
     float *X, *y;
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize transformer
-    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, batch_size, false, cublas_handle, cublaslt_handle);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, false, cublas_handle, cublaslt_handle);
     
     // Training parameters
     const int num_epochs = 50;
@@ -99,7 +100,7 @@ int main() {
     
     // Copy predictions back to host
     float* output = (float*)malloc(batch_size * seq_len * d_model * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(output, loaded_transformer->mlp3->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(output, loaded_transformer->mlp_layers[loaded_transformer->num_layers - 1]->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
