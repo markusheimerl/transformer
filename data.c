@@ -32,9 +32,9 @@ void generate_data(float** X, float** y, int seq_len, int num_samples, int d_mod
         
         float sum = 0.0f;
         for (int j = 0; j < seq_len; j++) {
-            float e = expf(A[i * seq_len + j] - max_val);
-            A[i * seq_len + j] = e;
-            sum += e;
+            float exp_val = expf(A[i * seq_len + j] - max_val);
+            A[i * seq_len + j] = exp_val;
+            sum += exp_val;
         }
         
         for (int j = 0; j < seq_len; j++) {
@@ -50,29 +50,35 @@ void generate_data(float** X, float** y, int seq_len, int num_samples, int d_mod
         W[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * w_scale;
     }
     
-    // First apply MLP-like transformation to all data: X_transformed = X * W
-    // This transforms [num_samples * seq_len, d_model] * [d_model, d_model] -> [num_samples * seq_len, d_model]
-    float* X_transformed = (float*)malloc(total * sizeof(float));
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                num_samples * seq_len, d_model, d_model,
-                1.0f, *X, d_model,
-                W, d_model,
-                0.0f, X_transformed, d_model);
+    // Allocate temporary buffer for attention output
+    float* attn_output = (float*)malloc(total * sizeof(float));
     
-    // Then apply attention transformation for each batch: Y_b = A * X_transformed_b
+    // Step 1: Apply attention transformation for each batch: attn_output = A * X
     for (int b = 0; b < num_samples; b++) {
-        float* X_transformed_b = &X_transformed[b * seq_len * d_model];
-        float* Y_b = &(*y)[b * seq_len * d_model];
+        float* X_b = &(*X)[b * seq_len * d_model];
+        float* attn_b = &attn_output[b * seq_len * d_model];
         
-        // Y_b = A * X_transformed_b
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     seq_len, d_model, seq_len,
                     1.0f, A, seq_len,
-                    X_transformed_b, d_model,
-                    0.0f, Y_b, d_model);
+                    X_b, d_model,
+                    0.0f, attn_b, d_model);
     }
     
-    // Add noise to make the problem more realistic
+    // Step 2: First residual connection: attn_output += X
+    cblas_saxpy(total, 1.0f, *X, 1, attn_output, 1);
+    
+    // Step 3: Apply MLP transformation: y = attn_output * W
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                num_samples * seq_len, d_model, d_model,
+                1.0f, attn_output, d_model,
+                W, d_model,
+                0.0f, *y, d_model);
+    
+    // Step 4: Second residual connection: y += attn_output
+    cblas_saxpy(total, 1.0f, attn_output, 1, *y, 1);
+    
+    // Add small noise to make the problem more realistic
     float noise_scale = range * 0.001f;
     for (int i = 0; i < total; i++) {
         float noise = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * noise_scale;
@@ -81,7 +87,7 @@ void generate_data(float** X, float** y, int seq_len, int num_samples, int d_mod
     
     free(A);
     free(W);
-    free(X_transformed);
+    free(attn_output);
     
     printf("Generated transformer data: %d samples, seq_len %d, d_model %d\n", 
            num_samples, seq_len, d_model);

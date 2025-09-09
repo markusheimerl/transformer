@@ -28,13 +28,39 @@ void free_transformer(Transformer* transformer) {
     free(transformer);
 }
 
+// CUDA kernel for in-place residual connection: a += b
+__global__ static void residual_add_kernel(float* a, float* b, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        a[idx] += b[idx];
+    }
+}
+
 // Forward pass
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
+    int seq_batch_size = transformer->batch_size * transformer->seq_len * transformer->d_model;
+    int block_size = 256;
+    int num_blocks = (seq_batch_size + block_size - 1) / block_size;
+    
     // Step 1: Attention layer
     forward_pass_attention(transformer->attention, d_X);
     
-    // Step 2: MLP layer
+    // Step 2: First residual connection - attention_output += input
+    residual_add_kernel<<<num_blocks, block_size>>>(
+        transformer->attention->d_output, 
+        d_X, 
+        seq_batch_size
+    );
+    
+    // Step 3: MLP layer
     forward_pass_mlp(transformer->mlp, transformer->attention->d_output);
+    
+    // Step 4: Second residual connection - mlp_output += attention_output
+    residual_add_kernel<<<num_blocks, block_size>>>(
+        transformer->mlp->d_layer_output, 
+        transformer->attention->d_output, 
+        seq_batch_size
+    );
 }
 
 // Calculate loss using MLP's output
@@ -48,13 +74,33 @@ void zero_gradients_transformer(Transformer* transformer) {
     zero_gradients_mlp(transformer->mlp);
 }
 
-// Backward pass: MLP -> Attention
+// Backward pass
 void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X) {
+    int seq_batch_size = transformer->batch_size * transformer->seq_len * transformer->d_model;
+    int block_size = 256;
+    int num_blocks = (seq_batch_size + block_size - 1) / block_size;
+    
     // Step 1: Backward through MLP
     backward_pass_mlp(transformer->mlp, transformer->attention->d_output, transformer->attention->d_grad_output);
     
-    // Step 2: Backward through attention
+    // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
+    residual_add_kernel<<<num_blocks, block_size>>>(
+        transformer->attention->d_grad_output, 
+        transformer->mlp->d_grad_output, 
+        seq_batch_size
+    );
+    
+    // Step 3: Backward through attention
     backward_pass_attention(transformer->attention, d_X, d_grad_X);
+    
+    // Step 4: Add gradient from first residual connection (attention_output += input)
+    if (d_grad_X != NULL) {
+        residual_add_kernel<<<num_blocks, block_size>>>(
+            d_grad_X, 
+            transformer->attention->d_grad_output, 
+            seq_batch_size
+        );
+    }
 }
 
 // Update weights for all components
