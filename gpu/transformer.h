@@ -21,6 +21,10 @@ typedef struct {
     Attention* attention2;
     MLP* mlp2;
     
+    // Layer 3 components
+    Attention* attention3;
+    MLP* mlp3;
+    
     // cuBLAS handles
     cublasHandle_t cublas_handle;
     cublasLtHandle_t cublaslt_handle;

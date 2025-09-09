@@ -99,7 +99,7 @@ int main() {
     
     // Copy predictions back to host
     float* output = (float*)malloc(batch_size * seq_len * d_model * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(output, loaded_transformer->mlp2->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(output, loaded_transformer->mlp3->d_layer_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
