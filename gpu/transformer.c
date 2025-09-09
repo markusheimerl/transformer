@@ -82,15 +82,15 @@ void save_transformer(Transformer* transformer, const char* filename) {
     
     fclose(file);
     
-    // Save attention and MLP components separately
+    // Save attention and MLP components
     char attn_filename[256], mlp_filename[256];
-    snprintf(attn_filename, sizeof(attn_filename), "%s.attn", filename);
-    snprintf(mlp_filename, sizeof(mlp_filename), "%s.mlp", filename);
+    snprintf(attn_filename, sizeof(attn_filename), "%s_attn.bin", filename);
+    snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp.bin", filename);
     
     save_attention(transformer->attention, attn_filename);
     save_mlp(transformer->mlp, mlp_filename);
     
-    printf("Transformer saved to %s (with .attn and .mlp components)\n", filename);
+    printf("Model saved to %s\n", filename);
 }
 
 // Load transformer from binary file
@@ -115,31 +115,22 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    // Load attention and MLP components
+    // Initialize transformer first
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, batch_size, is_causal, cublas_handle, cublaslt_handle);
+    
+    // Load attention and MLP components with .bin extensions
     char attn_filename[256], mlp_filename[256];
-    snprintf(attn_filename, sizeof(attn_filename), "%s.attn", filename);
-    snprintf(mlp_filename, sizeof(mlp_filename), "%s.mlp", filename);
+    snprintf(attn_filename, sizeof(attn_filename), "%s_attn.bin", filename);
+    snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp.bin", filename);
     
-    Attention* attention = load_attention(attn_filename, batch_size, cublas_handle, cublaslt_handle);
-    MLP* mlp = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle, cublaslt_handle);
+    // Free the initialized components
+    free_attention(transformer->attention);
+    free_mlp(transformer->mlp);
     
-    if (!attention || !mlp) {
-        if (attention) free_attention(attention);
-        if (mlp) free_mlp(mlp);
-        return NULL;
-    }
+    // Load the saved components
+    transformer->attention = load_attention(attn_filename, batch_size, cublas_handle, cublaslt_handle);
+    transformer->mlp = load_mlp(mlp_filename, batch_size * seq_len, cublas_handle, cublaslt_handle);
     
-    // Create transformer and assign loaded components
-    Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
-    transformer->seq_len = seq_len;
-    transformer->d_model = d_model;
-    transformer->batch_size = batch_size;
-    transformer->hidden_dim = hidden_dim;
-    transformer->cublas_handle = cublas_handle;
-    transformer->cublaslt_handle = cublaslt_handle;
-    transformer->attention = attention;
-    transformer->mlp = mlp;
-    
-    printf("Transformer loaded from %s\n", filename);
+    printf("Model loaded from %s\n", filename);
     return transformer;
 }
