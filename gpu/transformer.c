@@ -89,9 +89,9 @@ float calculate_loss_transformer(Transformer* transformer, float* d_y) {
                             final_mlp->output_dim, final_mlp->batch_size,
                             &alpha, final_mlp->d_layer_output, final_mlp->output_dim,
                             &beta, d_y, final_mlp->output_dim,
-                            final_mlp->d_error_output, final_mlp->output_dim));
+                            final_mlp->d_grad_output, final_mlp->output_dim));
     CHECK_CUBLAS(cublasSdot(final_mlp->cublas_handle, total_size, 
-                           final_mlp->d_error_output, 1, final_mlp->d_error_output, 1, &loss));
+                           final_mlp->d_grad_output, 1, final_mlp->d_grad_output, 1, &loss));
     
     return loss / total_size;
 }
@@ -126,22 +126,22 @@ void backward_pass_transformer(Transformer* transformer, float* d_X) {
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 transformer->d_model, total_seq,
                                 &alpha, current_attn->d_grad_output, transformer->d_model,
-                                &alpha, current_mlp->d_error_output, transformer->d_model,
+                                &alpha, current_mlp->d_grad_output, transformer->d_model,
                                 current_attn->d_grad_output, transformer->d_model));
         
         // Step 3: Backward pass through current attention
         if (layer > 0) {
             // Pass the previous layer's MLP error buffer to store the gradient
             MLP* prev_mlp = transformer->mlp_layers[layer-1];
-            backward_pass_attention(current_attn, layer_input, prev_mlp->d_error_output);
+            backward_pass_attention(current_attn, layer_input, prev_mlp->d_grad_output);
             
             // Step 4: Add gradient from attention residual connection (attention_output += input)
             CHECK_CUBLAS(cublasSgeam(transformer->cublas_handle,
                                     CUBLAS_OP_N, CUBLAS_OP_N,
                                     transformer->d_model, total_seq,
-                                    &alpha, prev_mlp->d_error_output, transformer->d_model,
+                                    &alpha, prev_mlp->d_grad_output, transformer->d_model,
                                     &alpha, current_attn->d_grad_output, transformer->d_model,
-                                    prev_mlp->d_error_output, transformer->d_model));
+                                    prev_mlp->d_grad_output, transformer->d_model));
         } else {
             // For the first layer, we don't need to propagate gradients further back
             backward_pass_attention(current_attn, layer_input, NULL);
