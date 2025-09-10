@@ -149,12 +149,23 @@ void save_transformer(Transformer* transformer, const char* filename) {
     
     fclose(file);
     
+    // Create base filename by removing .bin extension
+    char base_filename[256];
+    strncpy(base_filename, filename, sizeof(base_filename) - 1);
+    base_filename[sizeof(base_filename) - 1] = '\0';
+    
+    // Find and remove .bin extension if it exists
+    char* dot_pos = strrchr(base_filename, '.');
+    if (dot_pos && strcmp(dot_pos, ".bin") == 0) {
+        *dot_pos = '\0';
+    }
+    
     // Save all layer components
     for (int i = 0; i < transformer->num_layers; i++) {
         char attn_filename[256], mlp_filename[256];
         
-        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", filename, i);
-        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", filename, i);
+        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base_filename, i);
+        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base_filename, i);
         
         save_attention(transformer->attention_layers[i], attn_filename);
         save_mlp(transformer->mlp_layers[i], mlp_filename);
@@ -189,12 +200,23 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     // Initialize transformer first
     Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, cublaslt_handle);
     
+    // Create base filename by removing .bin extension
+    char base_filename[256];
+    strncpy(base_filename, filename, sizeof(base_filename) - 1);
+    base_filename[sizeof(base_filename) - 1] = '\0';
+    
+    // Find and remove .bin extension if it exists
+    char* dot_pos = strrchr(base_filename, '.');
+    if (dot_pos && strcmp(dot_pos, ".bin") == 0) {
+        *dot_pos = '\0';
+    }
+    
     // Load all layer components
     for (int i = 0; i < num_layers; i++) {
         char attn_filename[256], mlp_filename[256];
         
-        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", filename, i);
-        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", filename, i);
+        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base_filename, i);
+        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base_filename, i);
         
         // Free the initialized components
         free_attention(transformer->attention_layers[i]);
