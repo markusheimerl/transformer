@@ -18,9 +18,7 @@ Y &= S'W_2 + Z'
 \end{align*}
 $$
 
-The attention mechanism computes query, key, and value projections, applies scaled dot-product attention with softmax normalization, and projects the output. The first residual connection adds the input to the attention output. The MLP applies a linear transformation, swish activation, another linear transformation, and a second residual connection.
-
-The backward pass through each transformer layer processes gradients in reverse order, accounting for both the MLP and attention components along with their residual connections:
+The attention mechanism computes query, key, and value projections, applies scaled dot-product attention with softmax normalization, and projects the output. The first residual connection adds the input to the attention output. The MLP applies a linear transformation, swish activation, another linear transformation, and a second residual connection. The backward pass through each transformer layer processes gradients in reverse order, accounting for both the MLP and attention components along with their residual connections:
 
 $$
 \begin{align*}
@@ -43,8 +41,6 @@ $$
 \frac{\partial L}{\partial X} &= (\frac{\partial L}{\partial Q})W_q^T + (\frac{\partial L}{\partial K})W_k^T + (\frac{\partial L}{\partial V})W_v^T + \frac{\partial L}{\partial Z'}
 \end{align*}
 $$
-
-The residual connections create additive gradient flows: the second residual connection adds $\frac{\partial L}{\partial Y}$ to the attention output gradient $\frac{\partial L}{\partial Z'}$, while the first residual connection adds $\frac{\partial L}{\partial Z'}$ to the input gradient $\frac{\partial L}{\partial X}$. This design enables direct gradient flow to earlier layers, mitigating vanishing gradients in deep networks.
 
 The AdamW optimizer maintains exponential moving averages of gradients and their squares through $\beta_1$ and $\beta_2$, while simultaneously applying L2 regularization through weight decay $\lambda$. The learning rate is denoted by $\eta$, $t$ is the current training iteration, and $\epsilon$ is a small constant for numerical stability. For each weight matrix $W$, the update rule is:
 
