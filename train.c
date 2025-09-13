@@ -14,7 +14,7 @@ int main() {
     const int seq_len = 128;
     const int d_model = 64;
     const int hidden_dim = 256;
-    const int output_dim = d_model; // For now, keep same as d_model for backward compatibility
+    const int output_dim = d_model; // Change this to any desired output dimension (e.g., 32 for smaller output)
     const int num_samples = 1024;
     const int batch_size = 32;
     const int num_layers = 3;
