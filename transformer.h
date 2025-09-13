@@ -19,11 +19,12 @@ typedef struct {
     int d_model;
     int batch_size;
     int hidden_dim;
+    int output_dim;
     int num_layers;
 } Transformer;
 
 // Function prototypes
-Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal);
+Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int output_dim, int num_layers, int batch_size, bool is_causal);
 void free_transformer(Transformer* transformer);
 void forward_pass_transformer(Transformer* transformer, float* X);
 float calculate_loss_transformer(Transformer* transformer, float* y);
