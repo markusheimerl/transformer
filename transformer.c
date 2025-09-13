@@ -1,7 +1,7 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal) {
+Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int output_dim, int num_layers, int batch_size, bool is_causal) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
     // Store dimensions
@@ -9,6 +9,7 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     transformer->d_model = d_model;
     transformer->batch_size = batch_size;
     transformer->hidden_dim = hidden_dim;
+    transformer->output_dim = output_dim;
     transformer->num_layers = num_layers;
     
     // Allocate arrays for layer components
@@ -18,7 +19,10 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
         transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal);
-        transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len);
+        // For all layers except the last, output dimension is d_model
+        // For the last layer, output dimension is output_dim
+        int layer_output_dim = (i == num_layers - 1) ? output_dim : d_model;
+        transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, layer_output_dim, batch_size * seq_len);
     }
     
     return transformer;
@@ -61,8 +65,11 @@ void forward_pass_transformer(Transformer* transformer, float* X) {
         forward_pass_mlp(transformer->mlp_layers[layer], transformer->attention_layers[layer]->output);
         
         // Step 4: Second residual connection - mlp_output += attention_output
-        residual_add(transformer->mlp_layers[layer]->layer_output, 
-                    transformer->attention_layers[layer]->output, total_elements);
+        // Only perform this when dimensions match (not the last layer with different output_dim)
+        if (transformer->mlp_layers[layer]->output_dim == transformer->d_model) {
+            residual_add(transformer->mlp_layers[layer]->layer_output, 
+                        transformer->attention_layers[layer]->output, total_elements);
+        }
     }
 }
 
@@ -94,8 +101,11 @@ void backward_pass_transformer(Transformer* transformer, float* X, float* grad_X
                          transformer->attention_layers[layer]->grad_output);
         
         // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
-        residual_add(transformer->attention_layers[layer]->grad_output, 
-                    transformer->mlp_layers[layer]->grad_output, total_elements);
+        // Only perform this when dimensions match (not the last layer with different output_dim)
+        if (transformer->mlp_layers[layer]->output_dim == transformer->d_model) {
+            residual_add(transformer->attention_layers[layer]->grad_output, 
+                        transformer->mlp_layers[layer]->grad_output, total_elements);
+        }
         
         // Step 3: Backward through attention
         backward_pass_attention(transformer->attention_layers[layer], layer_input, layer_grad_input);
@@ -128,6 +138,7 @@ void save_transformer(Transformer* transformer, const char* filename) {
     fwrite(&transformer->d_model, sizeof(int), 1, file);
     fwrite(&transformer->batch_size, sizeof(int), 1, file);
     fwrite(&transformer->hidden_dim, sizeof(int), 1, file);
+    fwrite(&transformer->output_dim, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
     
     // Save attention is_causal flag
@@ -169,12 +180,13 @@ Transformer* load_transformer(const char* filename, int custom_batch_size) {
     }
     
     // Read dimensions
-    int seq_len, d_model, stored_batch_size, hidden_dim, num_layers;
+    int seq_len, d_model, stored_batch_size, hidden_dim, output_dim, num_layers;
     bool is_causal;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&hidden_dim, sizeof(int), 1, file);
+    fread(&output_dim, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     
@@ -184,7 +196,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size) {
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize transformer first
-    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, output_dim, num_layers, batch_size, is_causal);
     
     // Create base filename by removing .bin extension
     char base_filename[256];

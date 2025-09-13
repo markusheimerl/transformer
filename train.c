@@ -14,6 +14,7 @@ int main() {
     const int seq_len = 128;
     const int d_model = 64;
     const int hidden_dim = 256;
+    const int output_dim = d_model; // For now, keep same as d_model for backward compatibility
     const int num_samples = 1024;
     const int batch_size = 32;
     const int num_layers = 3;
@@ -23,7 +24,7 @@ int main() {
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize transformer
-    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, false);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, output_dim, num_layers, batch_size, false);
     
     // Training parameters
     const int num_epochs = 50;
