@@ -22,7 +22,7 @@ void generate_data(float** X, float** y, int seq_len, int num_samples, int d_mod
         A[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * a_scale;
     }
     
-    // Row-wise softmax on A to create proper attention weights
+    // Softmax on A to create proper attention weights
     for (int i = 0; i < seq_len; i++) {
         float max_val = -1e30f;
         for (int j = 0; j < seq_len; j++) {
