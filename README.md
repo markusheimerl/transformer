@@ -1,7 +1,7 @@
 # transformer
 A transformer implementation
 
-Consider a transformer operating on batched sequences of shape (batch_size × seq_len × d_model). The architecture consists of alternating self-attention and multilayer perceptron layers with residual connections. Each transformer layer applies attention followed by a feed-forward network. The forward propagation for a single layer follows:
+Consider a transformer operating on batched sequences of shape (batch_size × seq_len × d_model). The architecture consists of alternating self-attention and multilayer perceptron layers with residual connections. The forward propagation for a single layer follows:
 
 $$
 \begin{align*}
