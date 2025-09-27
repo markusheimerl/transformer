@@ -98,11 +98,11 @@ void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_gr
         // Step 1: Backward through MLP
         backward_pass_mlp(transformer->mlp_layers[layer], 
                          transformer->attention_layers[layer]->d_output, 
-                         transformer->attention_layers[layer]->d_grad_output);
+                         transformer->attention_layers[layer]->d_output);
         
         // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
         residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
-            transformer->attention_layers[layer]->d_grad_output, 
+            transformer->attention_layers[layer]->d_output, 
             transformer->mlp_layers[layer]->d_grad_output, 
             transformer->batch_size * transformer->seq_len * transformer->d_model
         );
@@ -114,7 +114,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_gr
         if (layer_grad_input != NULL) {
             residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
                 layer_grad_input, 
-                transformer->attention_layers[layer]->d_grad_output, 
+                transformer->attention_layers[layer]->d_output, 
                 transformer->batch_size * transformer->seq_len * transformer->d_model
             );
         }
