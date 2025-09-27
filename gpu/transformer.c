@@ -51,7 +51,7 @@ __global__ static void residual_add_kernel(float* a, float* b, int size) {
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
     // Process each layer sequentially
     for (int layer = 0; layer < transformer->num_layers; layer++) {
-        float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
+        float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
         
         // Step 1: Attention layer
         forward_pass_attention(transformer->attention_layers[layer], layer_input);
@@ -68,7 +68,7 @@ void forward_pass_transformer(Transformer* transformer, float* d_X) {
         
         // Step 4: Second residual connection - mlp_output += attention_output
         residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
-            transformer->mlp_layers[layer]->d_layer_output, 
+            transformer->mlp_layers[layer]->d_output, 
             transformer->attention_layers[layer]->d_output, 
             transformer->batch_size * transformer->seq_len * transformer->d_model
         );
@@ -92,8 +92,8 @@ void zero_gradients_transformer(Transformer* transformer) {
 void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X) {
     // Process layers in reverse order
     for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
-        float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_layer_output;
-        float* layer_grad_input = (layer == 0) ? d_grad_X : transformer->mlp_layers[layer-1]->d_grad_output;
+        float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
+        float* layer_grad_input = (layer == 0) ? d_grad_X : transformer->mlp_layers[layer-1]->d_output;
         
         // Step 1: Backward through MLP
         backward_pass_mlp(transformer->mlp_layers[layer], 
@@ -103,7 +103,7 @@ void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_gr
         // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
         residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
             transformer->attention_layers[layer]->d_output, 
-            transformer->mlp_layers[layer]->d_grad_output, 
+            transformer->mlp_layers[layer]->d_output, 
             transformer->batch_size * transformer->seq_len * transformer->d_model
         );
         
