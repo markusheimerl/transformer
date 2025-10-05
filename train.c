@@ -84,7 +84,7 @@ int main() {
     forward_pass_transformer(loaded_transformer, X);
     
     // Get predictions from the final MLP layer
-    float* output = loaded_transformer->mlp_layers[loaded_transformer->num_layers - 1]->layer_output;
+    float* output = loaded_transformer->mlp_layers[loaded_transformer->num_layers - 1]->output;
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");

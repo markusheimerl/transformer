@@ -49,7 +49,7 @@ void forward_pass_transformer(Transformer* transformer, float* X) {
     
     // Process each layer sequentially
     for (int layer = 0; layer < transformer->num_layers; layer++) {
-        float* layer_input = (layer == 0) ? X : transformer->mlp_layers[layer-1]->layer_output;
+        float* layer_input = (layer == 0) ? X : transformer->mlp_layers[layer-1]->output;
         
         // Step 1: Attention layer
         forward_pass_attention(transformer->attention_layers[layer], layer_input);
@@ -61,8 +61,7 @@ void forward_pass_transformer(Transformer* transformer, float* X) {
         forward_pass_mlp(transformer->mlp_layers[layer], transformer->attention_layers[layer]->output);
         
         // Step 4: Second residual connection - mlp_output += attention_output
-        residual_add(transformer->mlp_layers[layer]->layer_output, 
-                    transformer->attention_layers[layer]->output, total_elements);
+        residual_add(transformer->mlp_layers[layer]->output, transformer->attention_layers[layer]->output, total_elements);
     }
 }
 
@@ -85,7 +84,7 @@ void backward_pass_transformer(Transformer* transformer, float* X, float* grad_X
     
     // Process layers in reverse order
     for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
-        float* layer_input = (layer == 0) ? X : transformer->mlp_layers[layer-1]->layer_output;
+        float* layer_input = (layer == 0) ? X : transformer->mlp_layers[layer-1]->output;
         float* layer_grad_input = (layer == 0) ? grad_X : transformer->mlp_layers[layer-1]->grad_output;
         
         // Step 1: Backward through MLP
