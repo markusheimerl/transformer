@@ -18,7 +18,7 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
-        transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
+        transformer->attention_layers[i] = init_attention(seq_len, d_model, 8, batch_size, is_causal, cublaslt_handle);
         transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len, cublaslt_handle);
     }
     
