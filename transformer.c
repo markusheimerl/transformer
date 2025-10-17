@@ -107,10 +107,10 @@ void backward_pass_transformer(Transformer* transformer, float* X, float* grad_X
 }
 
 // Update weights for all components
-void update_weights_transformer(Transformer* transformer, float learning_rate) {
+void update_weights_transformer(Transformer* transformer, float learning_rate, int effective_batch_size) {
     for (int i = 0; i < transformer->num_layers; i++) {
-        update_weights_attention(transformer->attention_layers[i], learning_rate);
-        update_weights_mlp(transformer->mlp_layers[i], learning_rate);
+        update_weights_attention(transformer->attention_layers[i], learning_rate, effective_batch_size);
+        update_weights_mlp(transformer->mlp_layers[i], learning_rate, effective_batch_size);
     }
 }
 
