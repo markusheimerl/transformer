@@ -1,5 +1,62 @@
 #include "transformer.h"
 
+// CUDA kernel for RMSNorm forward (parameter-free)
+__global__ static void rmsnorm_forward_kernel(float* output, float* input, int batch_size, int seq_len, int d_model) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * seq_len;
+    float eps = 1e-6f;
+    
+    if (idx < total) {
+        float* in_vec = &input[idx * d_model];
+        float* out_vec = &output[idx * d_model];
+        
+        // Compute mean of squares
+        float sum_sq = 0.0f;
+        for (int i = 0; i < d_model; i++) {
+            sum_sq += in_vec[i] * in_vec[i];
+        }
+        float rms = sqrtf(sum_sq / d_model + eps);
+        
+        // Normalize
+        for (int i = 0; i < d_model; i++) {
+            out_vec[i] = in_vec[i] / rms;
+        }
+    }
+}
+
+// CUDA kernel for RMSNorm backward
+__global__ static void rmsnorm_backward_kernel(float* grad_input, float* grad_output, float* input, int batch_size, int seq_len, int d_model) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * seq_len;
+    float eps = 1e-6f;
+    
+    if (idx < total) {
+        float* in_vec = &input[idx * d_model];
+        float* grad_out_vec = &grad_output[idx * d_model];
+        float* grad_in_vec = &grad_input[idx * d_model];
+        
+        // Compute mean of squares (same as forward)
+        float sum_sq = 0.0f;
+        for (int i = 0; i < d_model; i++) {
+            sum_sq += in_vec[i] * in_vec[i];
+        }
+        float mean_sq = sum_sq / d_model;
+        float rms = sqrtf(mean_sq + eps);
+        float rms3 = rms * rms * rms;
+        
+        // Compute sum of (x_j * grad_out_j)
+        float sum_grad_x = 0.0f;
+        for (int i = 0; i < d_model; i++) {
+            sum_grad_x += in_vec[i] * grad_out_vec[i];
+        }
+        
+        // Compute gradient (accumulate)
+        for (int i = 0; i < d_model; i++) {
+            grad_in_vec[i] += (grad_out_vec[i] / rms) - (in_vec[i] * sum_grad_x) / (d_model * rms3);
+        }
+    }
+}
+
 // Initialize the transformer
 Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
@@ -11,6 +68,11 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     transformer->hidden_dim = hidden_dim;
     transformer->num_layers = num_layers;
     transformer->cublaslt_handle = cublaslt_handle;
+    
+    // Allocate RMSNorm buffers
+    int norm_buffer_size = batch_size * seq_len * d_model;
+    CHECK_CUDA(cudaMalloc(&transformer->d_norm_buffer1, norm_buffer_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&transformer->d_norm_buffer2, norm_buffer_size * sizeof(float)));
     
     // Allocate arrays for layer components
     transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
@@ -27,6 +89,10 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
 
 // Free transformer memory
 void free_transformer(Transformer* transformer) {
+    // Free RMSNorm buffers
+    cudaFree(transformer->d_norm_buffer1);
+    cudaFree(transformer->d_norm_buffer2);
+    
     // Free all layers
     for (int i = 0; i < transformer->num_layers; i++) {
         free_attention(transformer->attention_layers[i]);
@@ -49,28 +115,44 @@ __global__ static void residual_add_kernel(float* a, float* b, int size) {
 
 // Forward pass
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
+    int size = transformer->batch_size * transformer->seq_len * transformer->d_model;
+    int block_size = 256;
+    int num_blocks = (transformer->batch_size * transformer->seq_len + block_size - 1) / block_size;
+    
     // Process each layer sequentially
     for (int layer = 0; layer < transformer->num_layers; layer++) {
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
         
-        // Step 1: Attention layer
-        forward_pass_attention(transformer->attention_layers[layer], layer_input);
-        
-        // Step 2: First residual connection - attention_output += input
-        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
-            transformer->attention_layers[layer]->d_output, 
-            layer_input, 
-            transformer->batch_size * transformer->seq_len * transformer->d_model
+        // Step 1: Apply RMSNorm before attention
+        rmsnorm_forward_kernel<<<num_blocks, block_size>>>(
+            transformer->d_norm_buffer1, layer_input,
+            transformer->batch_size, transformer->seq_len, transformer->d_model
         );
         
-        // Step 3: MLP layer (input: attention->d_output)
-        forward_pass_mlp(transformer->mlp_layers[layer], transformer->attention_layers[layer]->d_output);
+        // Step 2: Attention layer
+        forward_pass_attention(transformer->attention_layers[layer], transformer->d_norm_buffer1);
         
-        // Step 4: Second residual connection - mlp_output += attention_output
-        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+        // Step 3: First residual connection - attention_output += input
+        residual_add_kernel<<<(size + 255) / 256, 256>>>(
+            transformer->attention_layers[layer]->d_output, 
+            layer_input, 
+            size
+        );
+        
+        // Step 4: Apply RMSNorm before MLP
+        rmsnorm_forward_kernel<<<num_blocks, block_size>>>(
+            transformer->d_norm_buffer2, transformer->attention_layers[layer]->d_output,
+            transformer->batch_size, transformer->seq_len, transformer->d_model
+        );
+        
+        // Step 5: MLP layer (input: d_norm_buffer2)
+        forward_pass_mlp(transformer->mlp_layers[layer], transformer->d_norm_buffer2);
+        
+        // Step 6: Second residual connection - mlp_output += attention_output
+        residual_add_kernel<<<(size + 255) / 256, 256>>>(
             transformer->mlp_layers[layer]->d_output, 
             transformer->attention_layers[layer]->d_output, 
-            transformer->batch_size * transformer->seq_len * transformer->d_model
+            size
         );
     }
 }
@@ -90,32 +172,69 @@ void zero_gradients_transformer(Transformer* transformer) {
 
 // Backward pass
 void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X) {
+    int size = transformer->batch_size * transformer->seq_len * transformer->d_model;
+    int block_size = 256;
+    int num_blocks = (transformer->batch_size * transformer->seq_len + block_size - 1) / block_size;
+    
     // Process layers in reverse order
     for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
         float* layer_grad_input = (layer == 0) ? d_grad_X : transformer->mlp_layers[layer-1]->d_grad_output;
+        float* result1 = transformer->attention_layers[layer]->d_output;  // attention_output + layer_input from forward
         
-        // Step 1: Backward through MLP
-        backward_pass_mlp(transformer->mlp_layers[layer], 
-                         transformer->attention_layers[layer]->d_output, 
-                         transformer->attention_layers[layer]->d_grad_output);
-        
-        // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
-        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+        // Step 1: Add gradient from second residual connection (mlp_output += attention_output)
+        residual_add_kernel<<<(size + 255) / 256, 256>>>(
             transformer->attention_layers[layer]->d_grad_output, 
             transformer->mlp_layers[layer]->d_grad_output, 
-            transformer->batch_size * transformer->seq_len * transformer->d_model
+            size
         );
         
-        // Step 3: Backward through attention
-        backward_pass_attention(transformer->attention_layers[layer], layer_input, layer_grad_input);
+        // Step 2: Recompute norm2 for MLP backward
+        rmsnorm_forward_kernel<<<num_blocks, block_size>>>(
+            transformer->d_norm_buffer2, result1,
+            transformer->batch_size, transformer->seq_len, transformer->d_model
+        );
         
-        // Step 4: Add gradient from first residual connection (attention_output += input)
+        // Step 3: Backward through MLP
+        backward_pass_mlp(transformer->mlp_layers[layer], 
+                         transformer->d_norm_buffer2,  // norm2 (input to MLP in forward)
+                         transformer->d_norm_buffer1);  // write grad w.r.t. norm2 here
+        
+        // Step 4: Backward through RMSNorm2
+        rmsnorm_backward_kernel<<<num_blocks, block_size>>>(
+            transformer->attention_layers[layer]->d_grad_output,  // accumulate gradient here
+            transformer->d_norm_buffer1,  // gradient w.r.t. norm2
+            result1,  // input to RMSNorm2
+            transformer->batch_size, transformer->seq_len, transformer->d_model
+        );
+        
+        // Step 5: Add gradient from first residual connection (attention_output += input)
         if (layer_grad_input != NULL) {
-            residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+            residual_add_kernel<<<(size + 255) / 256, 256>>>(
                 layer_grad_input, 
                 transformer->attention_layers[layer]->d_grad_output, 
-                transformer->batch_size * transformer->seq_len * transformer->d_model
+                size
+            );
+        }
+        
+        // Step 6: Recompute norm1 for attention backward
+        rmsnorm_forward_kernel<<<num_blocks, block_size>>>(
+            transformer->d_norm_buffer1, layer_input,
+            transformer->batch_size, transformer->seq_len, transformer->d_model
+        );
+        
+        // Step 7: Backward through attention
+        backward_pass_attention(transformer->attention_layers[layer], 
+                               transformer->d_norm_buffer1,  // norm1 (input to attention in forward)
+                               transformer->d_norm_buffer2);  // write grad w.r.t. norm1 here
+        
+        // Step 8: Backward through RMSNorm1
+        if (layer_grad_input != NULL) {
+            rmsnorm_backward_kernel<<<num_blocks, block_size>>>(
+                layer_grad_input,  // accumulate gradient here
+                transformer->d_norm_buffer2,  // gradient w.r.t. norm1
+                layer_input,  // input to RMSNorm1
+                transformer->batch_size, transformer->seq_len, transformer->d_model
             );
         }
     }

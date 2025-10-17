@@ -15,6 +15,10 @@ typedef struct {
     Attention** attention_layers;
     MLP** mlp_layers;
     
+    // RMSNorm buffers
+    float* d_norm_buffer1;  // [batch_size * seq_len * d_model]
+    float* d_norm_buffer2;  // [batch_size * seq_len * d_model]
+    
     // cuBLASLt handle
     cublasLtHandle_t cublaslt_handle;
     
