@@ -53,7 +53,7 @@ int main() {
             backward_pass_transformer(transformer, &X[batch_offset], NULL);
             
             // Update weights
-            update_weights_transformer(transformer, learning_rate);
+            update_weights_transformer(transformer, learning_rate, batch_size);
         }
         
         epoch_loss /= num_batches;
