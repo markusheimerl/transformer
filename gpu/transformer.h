@@ -34,6 +34,7 @@ float calculate_loss_transformer(Transformer* transformer, float* d_y);
 void zero_gradients_transformer(Transformer* transformer);
 void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X);
 void update_weights_transformer(Transformer* transformer, float learning_rate, int effective_batch_size);
+void reset_optimizer_transformer(Transformer* transformer);
 void save_transformer(Transformer* transformer, const char* filename);
 Transformer* load_transformer(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle);
 

@@ -129,6 +129,14 @@ void update_weights_transformer(Transformer* transformer, float learning_rate, i
     }
 }
 
+// Reset optimizer state
+void reset_optimizer_transformer(Transformer* transformer) {
+    for (int i = 0; i < transformer->num_layers; i++) {
+        reset_optimizer_attention(transformer->attention_layers[i]);
+        reset_optimizer_mlp(transformer->mlp_layers[i]);
+    }
+}
+
 // Save transformer to binary file
 void save_transformer(Transformer* transformer, const char* filename) {
     FILE* file = fopen(filename, "wb");
