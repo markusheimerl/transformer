@@ -15,6 +15,10 @@ typedef struct {
     Attention** attention_layers;
     MLP** mlp_layers;
     
+    // Intermediate buffer for double-pass architecture
+    float* d_intermediate_output;
+    float* d_grad_intermediate_output;
+    
     // cuBLASLt handle
     cublasLtHandle_t cublaslt_handle;
     

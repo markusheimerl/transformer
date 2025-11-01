@@ -14,6 +14,10 @@ typedef struct {
     Attention** attention_layers;
     MLP** mlp_layers;
     
+    // Intermediate buffer for double-pass architecture
+    float* intermediate_output;
+    float* grad_intermediate_output;
+    
     // Dimensions
     int seq_len;
     int d_model;

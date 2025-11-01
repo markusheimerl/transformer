@@ -16,6 +16,11 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     transformer->attention_layers = (Attention**)malloc(num_layers * sizeof(Attention*));
     transformer->mlp_layers = (MLP**)malloc(num_layers * sizeof(MLP*));
     
+    // Allocate intermediate buffers for double-pass
+    int intermediate_size = batch_size * seq_len * d_model;
+    CHECK_CUDA(cudaMalloc(&transformer->d_intermediate_output, intermediate_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&transformer->d_grad_intermediate_output, intermediate_size * sizeof(float)));
+    
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
         transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
@@ -27,6 +32,10 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
 
 // Free transformer memory
 void free_transformer(Transformer* transformer) {
+    // Free intermediate buffers
+    cudaFree(transformer->d_intermediate_output);
+    cudaFree(transformer->d_grad_intermediate_output);
+    
     // Free all layers
     for (int i = 0; i < transformer->num_layers; i++) {
         free_attention(transformer->attention_layers[i]);
@@ -47,30 +56,63 @@ __global__ static void residual_add_kernel(float* a, float* b, int size) {
     }
 }
 
-// Forward pass
+// Forward pass - processes through all layers twice with weight sharing
 void forward_pass_transformer(Transformer* transformer, float* d_X) {
-    // Process each layer sequentially
+    int total_elements = transformer->batch_size * transformer->seq_len * transformer->d_model;
+    
+    // FIRST PASS: Process through all layers
     for (int layer = 0; layer < transformer->num_layers; layer++) {
         float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
         
-        // Step 1: Attention layer
+        // Attention layer
         forward_pass_attention(transformer->attention_layers[layer], layer_input);
         
-        // Step 2: First residual connection - attention_output += input
-        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+        // First residual connection
+        residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
             transformer->attention_layers[layer]->d_output, 
             layer_input, 
-            transformer->batch_size * transformer->seq_len * transformer->d_model
+            total_elements
         );
         
-        // Step 3: MLP layer (input: attention->d_output)
+        // MLP layer
         forward_pass_mlp(transformer->mlp_layers[layer], transformer->attention_layers[layer]->d_output);
         
-        // Step 4: Second residual connection - mlp_output += attention_output
-        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+        // Second residual connection
+        residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
             transformer->mlp_layers[layer]->d_output, 
             transformer->attention_layers[layer]->d_output, 
-            transformer->batch_size * transformer->seq_len * transformer->d_model
+            total_elements
+        );
+    }
+    
+    // Store intermediate output after first pass
+    CHECK_CUDA(cudaMemcpy(transformer->d_intermediate_output, 
+                         transformer->mlp_layers[transformer->num_layers-1]->d_output,
+                         total_elements * sizeof(float), 
+                         cudaMemcpyDeviceToDevice));
+    
+    // SECOND PASS: Process through all layers again with same weights
+    for (int layer = 0; layer < transformer->num_layers; layer++) {
+        float* layer_input = (layer == 0) ? transformer->d_intermediate_output : transformer->mlp_layers[layer-1]->d_output;
+        
+        // Attention layer
+        forward_pass_attention(transformer->attention_layers[layer], layer_input);
+        
+        // First residual connection
+        residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
+            transformer->attention_layers[layer]->d_output, 
+            layer_input, 
+            total_elements
+        );
+        
+        // MLP layer
+        forward_pass_mlp(transformer->mlp_layers[layer], transformer->attention_layers[layer]->d_output);
+        
+        // Second residual connection
+        residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
+            transformer->mlp_layers[layer]->d_output, 
+            transformer->attention_layers[layer]->d_output, 
+            total_elements
         );
     }
 }
@@ -88,34 +130,77 @@ void zero_gradients_transformer(Transformer* transformer) {
     }
 }
 
-// Backward pass
+// Backward pass - backprops through both passes, accumulating gradients
 void backward_pass_transformer(Transformer* transformer, float* d_X, float* d_grad_X) {
-    // Process layers in reverse order
+    int total_elements = transformer->batch_size * transformer->seq_len * transformer->d_model;
+    
+    // SECOND PASS BACKWARD: Backprop through the second pass
     for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
-        float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
-        float* layer_grad_input = (layer == 0) ? d_grad_X : transformer->mlp_layers[layer-1]->d_grad_output;
+        float* layer_input = (layer == 0) ? transformer->d_intermediate_output : transformer->mlp_layers[layer-1]->d_output;
+        float* layer_grad_input = (layer == 0) ? transformer->d_grad_intermediate_output : transformer->mlp_layers[layer-1]->d_grad_output;
         
-        // Step 1: Backward through MLP
+        // Backward through MLP
         backward_pass_mlp(transformer->mlp_layers[layer], 
                          transformer->attention_layers[layer]->d_output, 
                          transformer->attention_layers[layer]->d_grad_output);
         
-        // Step 2: Add gradient from second residual connection (mlp_output += attention_output)
-        residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+        // Add gradient from second residual connection
+        residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
             transformer->attention_layers[layer]->d_grad_output, 
             transformer->mlp_layers[layer]->d_grad_output, 
-            transformer->batch_size * transformer->seq_len * transformer->d_model
+            total_elements
         );
         
-        // Step 3: Backward through attention
+        // Backward through attention
         backward_pass_attention(transformer->attention_layers[layer], layer_input, layer_grad_input);
         
-        // Step 4: Add gradient from first residual connection (attention_output += input)
+        // Add gradient from first residual connection
         if (layer_grad_input != NULL) {
-            residual_add_kernel<<<(transformer->batch_size * transformer->seq_len * transformer->d_model + 255) / 256, 256>>>(
+            residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
                 layer_grad_input, 
                 transformer->attention_layers[layer]->d_grad_output, 
-                transformer->batch_size * transformer->seq_len * transformer->d_model
+                total_elements
+            );
+        }
+    }
+    
+    // FIRST PASS BACKWARD: Backprop through the first pass
+    // Gradients from second pass are now in d_grad_intermediate_output
+    for (int layer = transformer->num_layers - 1; layer >= 0; layer--) {
+        float* layer_input = (layer == 0) ? d_X : transformer->mlp_layers[layer-1]->d_output;
+        float* layer_grad_input = (layer == 0) ? d_grad_X : transformer->mlp_layers[layer-1]->d_grad_output;
+        
+        // For the last layer of first pass, we need to add the gradient from second pass input
+        if (layer == transformer->num_layers - 1) {
+            // Add gradient flowing from the second pass
+            residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
+                transformer->mlp_layers[layer]->d_grad_output,
+                transformer->d_grad_intermediate_output,
+                total_elements
+            );
+        }
+        
+        // Backward through MLP (gradients accumulate)
+        backward_pass_mlp(transformer->mlp_layers[layer], 
+                         transformer->attention_layers[layer]->d_output, 
+                         transformer->attention_layers[layer]->d_grad_output);
+        
+        // Add gradient from second residual connection
+        residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
+            transformer->attention_layers[layer]->d_grad_output, 
+            transformer->mlp_layers[layer]->d_grad_output, 
+            total_elements
+        );
+        
+        // Backward through attention (gradients accumulate)
+        backward_pass_attention(transformer->attention_layers[layer], layer_input, layer_grad_input);
+        
+        // Add gradient from first residual connection
+        if (layer_grad_input != NULL) {
+            residual_add_kernel<<<(total_elements + 255) / 256, 256>>>(
+                layer_grad_input, 
+                transformer->attention_layers[layer]->d_grad_output, 
+                total_elements
             );
         }
     }
