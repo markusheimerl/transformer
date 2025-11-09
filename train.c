@@ -23,7 +23,7 @@ int main() {
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize transformer
-    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, false);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, false, false);
     
     // Training parameters
     const int num_epochs = 50;
