@@ -70,15 +70,22 @@ int main() {
     strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_transformer.bin", localtime(&now));
     strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_transformer_data.csv", localtime(&now));
 
-    // Save model and data with timestamped filenames
-    save_transformer(transformer, model_fname);
+    // Save model
+    FILE* model_file = fopen(model_fname, "wb");
+    serialize_transformer(transformer, model_file);
+    fclose(model_file);
+    printf("Model saved to %s\n", model_fname);
+    
+    // Save data
     save_data(X, y, seq_len, num_samples, d_model, data_fname);
     
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
 
-    // Load the model back with original batch_size
-    Transformer* loaded_transformer = load_transformer(model_fname, batch_size);
+    model_file = fopen(model_fname, "rb");
+    Transformer* loaded_transformer = deserialize_transformer(model_file, batch_size);
+    fclose(model_file);
+    printf("Model loaded from %s\n", model_fname);
 
     // Forward pass with loaded model on first batch
     forward_pass_transformer(loaded_transformer, X);

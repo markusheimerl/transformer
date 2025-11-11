@@ -137,60 +137,28 @@ void reset_optimizer_transformer(Transformer* transformer) {
     }
 }
 
-// Save transformer to binary file
-void save_transformer(Transformer* transformer, const char* filename) {
-    FILE* file = fopen(filename, "wb");
-    if (!file) {
-        printf("Error opening file for writing: %s\n", filename);
-        return;
-    }
-    
-    // Save dimensions
+// Serialize transformer to a file
+void serialize_transformer(Transformer* transformer, FILE* file) {
+    // Write dimensions
     fwrite(&transformer->seq_len, sizeof(int), 1, file);
     fwrite(&transformer->d_model, sizeof(int), 1, file);
     fwrite(&transformer->batch_size, sizeof(int), 1, file);
     fwrite(&transformer->hidden_dim, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
     
-    // Save attention is_causal and use_rope flags
+    // Write attention flags
     fwrite(&transformer->attention_layers[0]->is_causal, sizeof(bool), 1, file);
     fwrite(&transformer->attention_layers[0]->use_rope, sizeof(bool), 1, file);
     
-    fclose(file);
-    
-    // Create base filename by removing .bin extension
-    char base_filename[256];
-    strncpy(base_filename, filename, sizeof(base_filename) - 1);
-    base_filename[sizeof(base_filename) - 1] = '\0';
-    
-    // Find and remove .bin extension if it exists
-    char* dot_pos = strrchr(base_filename, '.');
-    if (dot_pos && strcmp(dot_pos, ".bin") == 0) {
-        *dot_pos = '\0';
-    }
-    
-    // Save all layer components
+    // Serialize all layers
     for (int i = 0; i < transformer->num_layers; i++) {
-        char attn_filename[256], mlp_filename[256];
-        
-        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base_filename, i);
-        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base_filename, i);
-        
-        save_attention(transformer->attention_layers[i], attn_filename);
-        save_mlp(transformer->mlp_layers[i], mlp_filename);
+        serialize_attention(transformer->attention_layers[i], file);
+        serialize_mlp(transformer->mlp_layers[i], file);
     }
-
-    printf("Model saved to %s\n", filename);
 }
 
-// Load transformer from binary file
-Transformer* load_transformer(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle) {
-    FILE* file = fopen(filename, "rb");
-    if (!file) {
-        printf("Error opening file for reading: %s\n", filename);
-        return NULL;
-    }
-    
+// Deserialize transformer from a file
+Transformer* deserialize_transformer(FILE* file, int custom_batch_size, cublasLtHandle_t cublaslt_handle) {
     // Read dimensions
     int seq_len, d_model, stored_batch_size, hidden_dim, num_layers;
     bool is_causal, use_rope;
@@ -202,41 +170,22 @@ Transformer* load_transformer(const char* filename, int custom_batch_size, cubla
     fread(&is_causal, sizeof(bool), 1, file);
     fread(&use_rope, sizeof(bool), 1, file);
     
-    fclose(file);
-    
-    // Use custom_batch_size if provided, otherwise use stored value
+    // Use custom batch size if provided
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    // Initialize transformer first
+    // Initialize transformer
     Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, use_rope, cublaslt_handle);
     
-    // Create base filename by removing .bin extension
-    char base_filename[256];
-    strncpy(base_filename, filename, sizeof(base_filename) - 1);
-    base_filename[sizeof(base_filename) - 1] = '\0';
-    
-    // Find and remove .bin extension if it exists
-    char* dot_pos = strrchr(base_filename, '.');
-    if (dot_pos && strcmp(dot_pos, ".bin") == 0) {
-        *dot_pos = '\0';
-    }
-    
-    // Load all layer components
+    // Deserialize all layers
     for (int i = 0; i < num_layers; i++) {
-        char attn_filename[256], mlp_filename[256];
-        
-        snprintf(attn_filename, sizeof(attn_filename), "%s_attn%d.bin", base_filename, i);
-        snprintf(mlp_filename, sizeof(mlp_filename), "%s_mlp%d.bin", base_filename, i);
-        
         // Free the initialized components
         free_attention(transformer->attention_layers[i]);
         free_mlp(transformer->mlp_layers[i]);
         
-        // Load the saved components
-        transformer->attention_layers[i] = load_attention(attn_filename, batch_size, cublaslt_handle);
-        transformer->mlp_layers[i] = load_mlp(mlp_filename, batch_size * seq_len, cublaslt_handle);
+        // Deserialize the saved components
+        transformer->attention_layers[i] = deserialize_attention(file, batch_size, cublaslt_handle);
+        transformer->mlp_layers[i] = deserialize_mlp(file, batch_size * seq_len, cublaslt_handle);
     }
     
-    printf("Model loaded from %s\n", filename);
     return transformer;
 }
