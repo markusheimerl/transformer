@@ -1,7 +1,7 @@
 #include "transformer.h"
 
 // Initialize the transformer
-Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal) {
+Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_layers, int batch_size, bool is_causal, bool use_rope) {
     Transformer* transformer = (Transformer*)malloc(sizeof(Transformer));
     
     // Store dimensions
@@ -17,7 +17,7 @@ Transformer* init_transformer(int seq_len, int d_model, int hidden_dim, int num_
     
     // Initialize all layers
     for (int i = 0; i < num_layers; i++) {
-        transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal);
+        transformer->attention_layers[i] = init_attention(seq_len, d_model, batch_size, is_causal, use_rope);
         transformer->mlp_layers[i] = init_mlp(d_model, hidden_dim, d_model, batch_size * seq_len);
     }
     
@@ -137,9 +137,10 @@ void save_transformer(Transformer* transformer, const char* filename) {
     fwrite(&transformer->hidden_dim, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
     
-    // Save attention is_causal flag
+    // Save attention is_causal and use_rope flags
     fwrite(&transformer->attention_layers[0]->is_causal, sizeof(bool), 1, file);
-    
+    fwrite(&transformer->attention_layers[0]->use_rope, sizeof(bool), 1, file);
+
     fclose(file);
     
     // Create base filename by removing .bin extension
@@ -177,13 +178,14 @@ Transformer* load_transformer(const char* filename, int custom_batch_size) {
     
     // Read dimensions
     int seq_len, d_model, stored_batch_size, hidden_dim, num_layers;
-    bool is_causal;
+    bool is_causal, use_rope;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&hidden_dim, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
+    fread(&use_rope, sizeof(bool), 1, file);
     
     fclose(file);
     
@@ -191,7 +193,7 @@ Transformer* load_transformer(const char* filename, int custom_batch_size) {
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize transformer first
-    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal);
+    Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, use_rope);
     
     // Create base filename by removing .bin extension
     char base_filename[256];
