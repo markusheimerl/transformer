@@ -127,7 +127,6 @@ void serialize_transformer(Transformer* transformer, FILE* file) {
     // Write dimensions
     fwrite(&transformer->seq_len, sizeof(int), 1, file);
     fwrite(&transformer->d_model, sizeof(int), 1, file);
-    fwrite(&transformer->batch_size, sizeof(int), 1, file);
     fwrite(&transformer->hidden_dim, sizeof(int), 1, file);
     fwrite(&transformer->num_layers, sizeof(int), 1, file);
     
@@ -143,20 +142,16 @@ void serialize_transformer(Transformer* transformer, FILE* file) {
 }
 
 // Deserialize transformer from a file
-Transformer* deserialize_transformer(FILE* file, int custom_batch_size) {
+Transformer* deserialize_transformer(FILE* file, int batch_size) {
     // Read dimensions
-    int seq_len, d_model, stored_batch_size, hidden_dim, num_layers;
+    int seq_len, d_model, hidden_dim, num_layers;
     bool is_causal, use_rope;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
-    fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&hidden_dim, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     fread(&use_rope, sizeof(bool), 1, file);
-    
-    // Use custom batch size if provided
-    int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize transformer
     Transformer* transformer = init_transformer(seq_len, d_model, hidden_dim, num_layers, batch_size, is_causal, use_rope);

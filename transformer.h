@@ -32,6 +32,6 @@ void backward_pass_transformer(Transformer* transformer, float* X, float* grad_X
 void update_weights_transformer(Transformer* transformer, float learning_rate, int effective_batch_size);
 void reset_optimizer_transformer(Transformer* transformer);
 void serialize_transformer(Transformer* transformer, FILE* file);
-Transformer* deserialize_transformer(FILE* file, int custom_batch_size);
+Transformer* deserialize_transformer(FILE* file, int batch_size);
 
 #endif
